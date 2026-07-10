@@ -55,6 +55,38 @@ export function abortReconnect(accountId: string): void {
   }
 }
 
+/** How long to wait for a stale client to close before abandoning it. */
+const STALE_STOP_TIMEOUT_MS = 5000;
+
+/**
+ * Stop and discard the client currently registered for an account.
+ *
+ * `activeClients.delete()` on its own only drops our reference: the
+ * `@xmpp/client` instance stays alive with an open TCP socket. Reconnecting
+ * without stopping it therefore leaks a socket per attempt against the server.
+ * The stop is bounded so a wedged teardown can't stall the reconnect.
+ */
+async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
+  const stale = activeClients.get(accountId);
+  activeClients.delete(accountId);
+  if (!stale) return;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve(stale.stop()).catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          log?.warn?.(`[${accountId}] Stale client stop exceeded ${STALE_STOP_TIMEOUT_MS}ms; abandoning it`);
+          resolve();
+        }, STALE_STOP_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Schedule a reconnection attempt with exponential backoff
  */
@@ -102,9 +134,13 @@ export function scheduleReconnect(
     log?.info?.(`[${accountId}] Attempting reconnect (attempt ${state.attempts})...`);
     
     try {
-      // Remove old client
-      activeClients.delete(accountId);
-      
+      // Stop the old client before dropping the reference. Deleting the map
+      // entry alone orphans the underlying @xmpp/client, which holds its TCP
+      // socket open -- so every reconnect attempt leaked one connection to the
+      // server. A server-side fault that keeps us reconnecting (e.g. STARTTLS
+      // failing) would then exhaust the server's file descriptors.
+      await stopStaleClient(accountId, log);
+
       // Start a fresh connection
       if (startXmppConnectionFn) {
         await startXmppConnectionFn(ctx);
