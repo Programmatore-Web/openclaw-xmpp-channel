@@ -1,5 +1,5 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk";
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/core";
 import type { XmppConfig, ResolvedXmppAccount } from "./types.js";
 
 /**
@@ -91,9 +91,9 @@ export function resolveXmppAccount(params: {
     // The default account's settings normally live at the channels.xmpp root,
     // but OpenClaw's config normalization can relocate them under
     // accounts[DEFAULT_ACCOUNT_ID] (leaving root.jid unset) — e.g. on a
-    // multi-account host where the primary account (pierce@) sits in
-    // accounts.default beside named accounts (ledger@/pixel@). Resolving to
-    // bare root then yields no jid, so the gateway treats the default account
+    // multi-account host where the primary account sits in accounts.default
+    // beside named accounts. Resolving to bare root then yields no jid, so the
+    // gateway treats the default account
     // as unconfigured and silently never starts it (no "Starting XMPP
     // connection" log — the account just disappears while named ones connect).
     // Merge both layouts so the default account resolves whether its jid lives

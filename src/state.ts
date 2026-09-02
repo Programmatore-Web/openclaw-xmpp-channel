@@ -1,12 +1,13 @@
 /**
  * Global state management for XMPP connections
- * 
+ *
  * These Maps track per-account state. cleanupAccountState() must be called
  * when an account is removed to prevent memory leaks.
  */
 
 import type { client } from "@xmpp/client";
 import type { Logger } from "./types.js";
+import { clearMucOccupantIdentities } from "./muc-identity.js";
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -17,6 +18,7 @@ export interface ReconnectState {
   lastAttemptAt: number;
   nextDelayMs: number;
   aborted: boolean;
+  timer?: NodeJS.Timeout;
 }
 
 export interface PendingMucJoin {
@@ -40,9 +42,6 @@ export const RECONNECT_MAX_ATTEMPTS = 20;
 // MUC join timing
 export const MUC_JOIN_TIMEOUT_MS = 10000;
 export const MUC_LEAVE_WAIT_MS = 1000;
-
-// Common MUC domain patterns for detection
-export const MUC_DOMAIN_PATTERNS = ["conference.", "muc.", "rooms.", "chat.", "groupchat."];
 
 // =============================================================================
 // GLOBAL STATE MAPS
@@ -117,7 +116,11 @@ export function getRecentInboundMessageId(accountId: string, fromJid: string): s
  * Returns the server ID if found, otherwise tries recent inbound message ID as fallback
  * Otherwise returns the original client ID
  */
-export function getServerMessageId(accountId: string, clientMessageId: string, conversationJid?: string): string {
+export function getServerMessageId(
+  accountId: string,
+  clientMessageId: string,
+  conversationJid?: string
+): string {
   // First try our sent message tracking
   const serverId = sentMessageIds.get(`${accountId}:${clientMessageId}`);
   if (serverId) {
@@ -130,7 +133,6 @@ export function getServerMessageId(accountId: string, clientMessageId: string, c
     // Try with the full JID as-is
     let recentInboundId = getRecentInboundMessageId(accountId, conversationJid);
     if (recentInboundId) {
-      console.log(`[XMPP:state] getServerMessageId: AI passed wrong ID ${clientMessageId}, using recent inbound ${recentInboundId} as fallback`);
       return recentInboundId;
     }
 
@@ -139,7 +141,6 @@ export function getServerMessageId(accountId: string, clientMessageId: string, c
     if (bareJid !== conversationJid) {
       recentInboundId = getRecentInboundMessageId(accountId, bareJid);
       if (recentInboundId) {
-        console.log(`[XMPP:state] getServerMessageId: AI passed wrong ID ${clientMessageId}, using recent inbound (bare JID) ${recentInboundId} as fallback`);
         return recentInboundId;
       }
     }
@@ -158,21 +159,22 @@ export function getServerMessageId(accountId: string, clientMessageId: string, c
  */
 export function cleanupAccountState(accountId: string, log?: Logger): void {
   log?.debug?.(`[${accountId}] Cleaning up account state...`);
-  
+
   // Stop and remove client
   const xmpp = activeClients.get(accountId);
   if (xmpp) {
-    try {
-      xmpp.stop();
-    } catch {
-      // Ignore stop errors during cleanup
-    }
+    void xmpp.stop().catch((err) => {
+      log?.warn?.(
+        `[${accountId}] XMPP stop failed during state cleanup: ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
     activeClients.delete(accountId);
   }
-  
+
   // Clear joined rooms
   joinedRooms.delete(accountId);
-  
+  clearMucOccupantIdentities(accountId);
+
   // Clear pending MUC joins for this account
   for (const [key, pending] of pendingMucJoins.entries()) {
     if (key.startsWith(`${accountId}:`)) {
@@ -181,20 +183,32 @@ export function cleanupAccountState(accountId: string, log?: Logger): void {
       pendingMucJoins.delete(key);
     }
   }
-  
+
   // Stop keepalive
   const interval = keepaliveIntervals.get(accountId);
   if (interval) {
     clearInterval(interval);
     keepaliveIntervals.delete(accountId);
   }
-  
+
   // Abort and clear reconnect state
   const reconnectState = reconnectStates.get(accountId);
   if (reconnectState) {
+    if (reconnectState.timer) {
+      clearTimeout(reconnectState.timer);
+      reconnectState.timer = undefined;
+    }
     reconnectState.aborted = true;
   }
   reconnectStates.delete(accountId);
-  
+
+  const accountPrefix = `${accountId}:`;
+  for (const key of sentMessageIds.keys()) {
+    if (key.startsWith(accountPrefix)) sentMessageIds.delete(key);
+  }
+  for (const key of recentInboundMessageIds.keys()) {
+    if (key.startsWith(accountPrefix)) recentInboundMessageIds.delete(key);
+  }
+
   log?.debug?.(`[${accountId}] Account state cleaned up`);
 }

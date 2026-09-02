@@ -1,171 +1,227 @@
-/**
- * Inbound Message Handling
- * 
- * Handles routing inbound XMPP messages to OpenClaw
- */
+/** Inbound XMPP authorization, routing, and text reply delivery. */
 
 import { xml } from "@xmpp/client";
 import { randomUUID } from "crypto";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { bareJid } from "./config-schema.js";
 import { getXmppRuntime } from "./runtime.js";
 import { normalizeAllowFrom, isSenderAllowed } from "./normalize.js";
-import { sendXmppMedia } from "./outbound.js";
 import type { XmppConfig, XmppInboundMessage, Logger, ChannelAccountStatusPatch } from "./types.js";
 import { activeClients, recordInboundMessageId } from "./state.js";
 import { sendChatState, sendChatMarker } from "./chat-state.js";
-import { isOmemoEnabled, encryptOmemoMessage, encryptMucOmemoMessage, isRoomOmemoCapable, buildOmemoMessageStanza } from "./omemo/index.js";
-import { getOccupantRealJid } from "./omemo/muc-occupants.js";
-import { buildReplyElement, buildReplyFallbackPrefix, buildReplyFallbackMarker } from "./replies.js";
+import { getMucOccupantRealJid } from "./muc-identity.js";
+import {
+  buildReplyElement,
+  buildReplyFallbackPrefix,
+  buildReplyFallbackMarker,
+} from "./replies.js";
 
-/**
- * Generate a proper XMPP message ID
- */
-function generateMessageId(): string {
-  return randomUUID();
+type SenderFacts = {
+  senderBare: string;
+  senderFull: string;
+  isGroup: boolean;
+  roomJid?: string;
+  senderNick?: string;
+};
+
+type SenderAccess = {
+  allowed: boolean;
+  isOwner: boolean;
+  senderIdentity: string;
+};
+
+function isConfiguredRoom(config: XmppConfig, roomJid: string | undefined): boolean {
+  if (!roomJid) return false;
+  const room = bareJid(roomJid).toLowerCase();
+  return config.groups?.some((entry) => bareJid(entry).toLowerCase() === room) ?? false;
+}
+
+async function sendPairingChallenge(
+  accountId: string,
+  senderBare: string,
+  log?: Logger
+): Promise<void> {
+  const rt = getXmppRuntime();
+  const client = activeClients.get(accountId);
+  if (!client) return;
+
+  try {
+    const { code, created } = await rt.channel.pairing.upsertPairingRequest({
+      channel: "xmpp",
+      accountId,
+      id: senderBare,
+      meta: { jid: senderBare },
+    });
+    if (!created) return;
+
+    const text = rt.channel.pairing.buildPairingReply({
+      channel: "xmpp",
+      idLine: `Your XMPP JID: ${senderBare}`,
+      code,
+    });
+    await client.send(
+      xml(
+        "message",
+        { to: senderBare, type: "chat", id: `pairing_${Date.now()}` },
+        xml("body", {}, text)
+      )
+    );
+    log?.info?.(`[${accountId}] Created pairing request for ${senderBare}`);
+  } catch (err) {
+    log?.warn?.(
+      `[${accountId}] Failed to create or send pairing challenge: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
 }
 
 /**
- * Handle inbound message - validate allowlist and route to OpenClaw
+ * Resolve sender access before routing or session creation.
+ * Empty allowlists never match; explicit `open` remains supported.
  */
+async function authorizeSender(
+  facts: SenderFacts,
+  accountId: string,
+  config: XmppConfig,
+  issuePairing: boolean,
+  log?: Logger
+): Promise<SenderAccess> {
+  const owners = normalizeAllowFrom(config.allowFrom);
+
+  if (facts.isGroup) {
+    const roomJid = facts.roomJid ? bareJid(facts.roomJid) : undefined;
+    if (!isConfiguredRoom(config, roomJid)) {
+      log?.debug?.(`[XMPP] Blocked message from undeclared room ${roomJid ?? "unknown"}`);
+      return { allowed: false, isOwner: false, senderIdentity: facts.senderFull };
+    }
+
+    const realJid =
+      roomJid && facts.senderNick
+        ? getMucOccupantRealJid(accountId, roomJid, facts.senderNick)
+        : undefined;
+    const senderIdentity = realJid ?? facts.senderFull;
+    const isOwner = realJid ? isSenderAllowed(owners, realJid) : false;
+    const groupPolicy = config.groupPolicy ?? "allowlist";
+
+    if (groupPolicy === "open") {
+      return { allowed: true, isOwner, senderIdentity };
+    }
+
+    if (!realJid) {
+      log?.warn?.(`[XMPP] Blocked group sender ${facts.senderFull}: real JID is not verifiable`);
+      return { allowed: false, isOwner: false, senderIdentity };
+    }
+
+    const groupAllowlist = normalizeAllowFrom(config.groupAllowFrom ?? config.allowFrom);
+    if (!isSenderAllowed(groupAllowlist, realJid)) {
+      log?.debug?.(`[XMPP] Blocked group sender ${realJid}: not in groupAllowFrom`);
+      return { allowed: false, isOwner, senderIdentity: realJid };
+    }
+
+    return { allowed: true, isOwner, senderIdentity: realJid };
+  }
+
+  const isOwner = isSenderAllowed(owners, facts.senderBare);
+  if (isOwner) {
+    return { allowed: true, isOwner: true, senderIdentity: facts.senderBare };
+  }
+
+  const dmPolicy = config.dmPolicy ?? "pairing";
+  if (dmPolicy === "open") {
+    return { allowed: true, isOwner: false, senderIdentity: facts.senderBare };
+  }
+
+  if (dmPolicy === "allowlist") {
+    const dmAllowlist = normalizeAllowFrom(config.dmAllowlist);
+    return {
+      allowed: isSenderAllowed(dmAllowlist, facts.senderBare),
+      isOwner: false,
+      senderIdentity: facts.senderBare,
+    };
+  }
+
+  if (dmPolicy === "pairing") {
+    try {
+      const approved = await getXmppRuntime().channel.pairing.readAllowFromStore({
+        channel: "xmpp",
+        accountId,
+      });
+      if (isSenderAllowed(normalizeAllowFrom(approved.map(String)), facts.senderBare)) {
+        return { allowed: true, isOwner: false, senderIdentity: facts.senderBare };
+      }
+    } catch (err) {
+      log?.warn?.(
+        `[${accountId}] Pairing allowlist unavailable; denying ${facts.senderBare}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    if (issuePairing) await sendPairingChallenge(accountId, facts.senderBare, log);
+  }
+
+  log?.debug?.(`[XMPP] Blocked direct sender ${facts.senderBare} (dmPolicy=${dmPolicy})`);
+  return { allowed: false, isOwner: false, senderIdentity: facts.senderBare };
+}
+
+/** Validate an inbound text message and route it to OpenClaw. */
 export async function handleInboundMessage(
   message: XmppInboundMessage,
-  cfg: unknown,
+  cfg: OpenClawConfig,
   accountId: string,
   config: XmppConfig,
   log?: Logger,
   setStatus?: (patch: ChannelAccountStatusPatch) => void
 ): Promise<void> {
-  const rt = getXmppRuntime();
+  setStatus?.({ accountId, lastInboundAt: Date.now() });
 
-  // Update last inbound timestamp
-  setStatus?.({
+  const senderBare = bareJid(message.from).toLowerCase();
+  const access = await authorizeSender(
+    {
+      senderBare,
+      senderFull: message.from,
+      isGroup: message.isGroup,
+      roomJid: message.roomJid,
+      senderNick: message.senderNick,
+    },
     accountId,
-    lastInboundAt: Date.now(),
-  });
+    config,
+    true,
+    log
+  );
+  if (!access.allowed) return;
 
-  // Check allowlist - different logic for groups vs direct chats
-  const senderBare = bareJid(message.from);
-  
-  // First check if sender is in allowFrom (owners) - they always have access
-  const allowFromList = normalizeAllowFrom(config.allowFrom);
-  const isOwner = isSenderAllowed(allowFromList, senderBare);
-  
-  if (message.isGroup) {
-    // For groups: check groupPolicy first
-    const groupPolicy = config.groupPolicy ?? "open";
-    
-    if (groupPolicy === "open") {
-      // Open policy - allow all group messages
-      log?.debug?.(`[XMPP] Group message allowed (groupPolicy: open)`);
-    } else {
-      // Allowlist policy - check groupAllowFrom (falls back to allowFrom)
-      // For group messages, we need to check the sender's REAL JID, not the room JID
-      // The occupant JID is room@conference/nick, so we need to look up the real JID
-      const groupAllowList = normalizeAllowFrom(config.groupAllowFrom ?? config.allowFrom);
-      
-      // Try to get the sender's real JID from MUC occupant tracking
-      const senderNick = message.senderNick;
-      const roomJid = message.roomJid;
-      const realSenderJid = (senderNick && roomJid) 
-        ? getOccupantRealJid(accountId, roomJid, senderNick) 
-        : null;
-      
-      if (realSenderJid) {
-        // Non-anonymous room - check real JID against allowlist
-        if (!isSenderAllowed(groupAllowList, realSenderJid)) {
-          log?.debug?.(`[XMPP] Group message blocked: ${realSenderJid} (real JID for ${senderNick}) not in groupAllowFrom`);
-          return;
-        }
-        log?.debug?.(`[XMPP] Group message allowed: ${realSenderJid} in groupAllowFrom`);
-      } else {
-        // Anonymous/semi-anonymous room - can't verify real JID
-        // Allow message since the room is already configured in 'groups'
-        // If admin wants stricter control, they should use a non-anonymous room
-        log?.debug?.(`[XMPP] Group message allowed (anonymous room, cannot verify real JID for ${senderNick})`);
-      }
-    }
-  } else {
-    // For direct chats: owners (allowFrom) always have access
-    if (isOwner) {
-      log?.debug?.(`[XMPP] Direct chat allowed (owner ${senderBare} is in allowFrom)`);
-    } else {
-      // Non-owners (guests): check dmPolicy
-      const dmPolicy = config.dmPolicy ?? "open";
-      
-      if (dmPolicy === "disabled") {
-        log?.debug?.(`[XMPP] Direct chat blocked (dmPolicy: disabled, guest ${senderBare})`);
-        return;
-      } else if (dmPolicy === "open") {
-        log?.debug?.(`[XMPP] Direct chat allowed (dmPolicy: open)`);
-      } else if (dmPolicy === "allowlist") {
-        // allowlist mode: check dmAllowlist (owners already passed above)
-        const dmAllowList = normalizeAllowFrom(config.dmAllowlist);
-        if (isSenderAllowed(dmAllowList, senderBare)) {
-          log?.debug?.(`[XMPP] Direct chat allowed (dmPolicy: allowlist, ${senderBare} in dmAllowlist)`);
-        } else {
-          log?.debug?.(`[XMPP] Direct chat blocked: guest ${senderBare} not in dmAllowlist`);
-          return;
-        }
-      } else {
-        // pairing or unknown policy - let OpenClaw core handle pairing flow
-        log?.debug?.(`[XMPP] Direct chat: guest ${senderBare}, dmPolicy=${dmPolicy}`);
-      }
-    }
+  const rt = getXmppRuntime();
+  const senderIdentity = access.senderIdentity;
+  log?.info?.(`[XMPP] Authorized inbound text from=${senderIdentity} isGroup=${message.isGroup}`);
+
+  if (config.sendReadReceipts !== false && message.id && !message.isGroup) {
+    await sendChatMarker(accountId, senderBare, message.id, "displayed", log);
   }
 
-  // For groups, sender identity is the full occupant JID (room@conference/nickname)
-  // For direct chats, sender identity is the bare JID (user@server)
-  const senderIdentity = message.isGroup ? message.from : senderBare;
-  
-  log?.info?.(`[XMPP] Inbound: from=${senderIdentity} isGroup=${message.isGroup} body="${message.body.slice(0, 50)}..."`);
-
-  // XEP-0333: Send read receipt (displayed marker) if enabled
-  const sendReadReceipts = config.sendReadReceipts !== false; // default true
-  if (sendReadReceipts && message.id && !message.isGroup) {
-    try {
-      await sendChatMarker(accountId, senderBare, message.id, "displayed", log);
-    } catch (err) {
-      log?.warn?.(`[XMPP] Failed to send read receipt: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  } else if (!sendReadReceipts) {
-    log?.debug?.(`[XMPP] Read receipts disabled, skipping for message ${message.id}`);
-  }
-
-  // Command authorization: owners (allowFrom) always authorized,
-  // guests authorized only when dmPolicy allows them through
-  const commandAuthorized = isOwner || (config.dmPolicy ?? "open") === "open";
-  
-  // Route to OpenClaw
   const route = rt.channel.routing.resolveAgentRoute({
     cfg,
     channel: "xmpp",
     accountId,
     peer: {
-      kind: message.isGroup ? "group" : "dm",
+      kind: message.isGroup ? "group" : "direct",
       id: message.isGroup ? message.roomJid! : senderBare,
     },
   });
+  const storePath = rt.channel.session.resolveStorePath(
+    (cfg as { session?: { store?: string } }).session?.store,
+    { agentId: route.agentId }
+  );
 
-  const storePath = rt.channel.session.resolveStorePath((cfg as { session?: { store?: string } }).session?.store, {
-    agentId: route.agentId,
-  });
-
-  // Build the message context using finalizeInboundContext (same pattern as other channels)
-  // Note: Both MessageSid AND messageId are included for consistency with reaction tool parameter
-  const msgId = message.stanzaId || message.id || `xmpp-${Date.now()}`;
-  // XEP-0066: if peer attached an OOB URL (file upload, image, etc.), surface
-  // it to the agent. Many clients (Conversations, Dino) include the URL in
-  // the body too, so only append if not already there.
   let displayBody = message.body;
   if (message.oobUrl && !displayBody.includes(message.oobUrl)) {
-    const descPart = message.oobDesc ? ` (${message.oobDesc})` : "";
-    displayBody = `${displayBody ? displayBody + "\n" : ""}[Attachment: ${message.oobUrl}${descPart}]`;
+    const description = message.oobDesc ? ` (${message.oobDesc})` : "";
+    displayBody = `${displayBody ? `${displayBody}\n` : ""}[Shared URL: ${message.oobUrl}${description}]`;
   }
+
+  const msgId = message.stanzaId || message.id || `xmpp-${Date.now()}`;
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: displayBody,
     RawBody: message.body,
     CommandBody: displayBody,
-    From: `xmpp:${senderIdentity}`,
+    From: `xmpp:${message.isGroup ? message.from : senderIdentity}`,
     To: `xmpp:${message.to}`,
     SessionKey: route.sessionKey,
     AccountId: accountId,
@@ -176,399 +232,164 @@ export async function handleInboundMessage(
     Provider: "xmpp",
     Surface: "xmpp",
     MessageSid: msgId,
-    messageId: msgId, // Alias for consistency with reaction tool parameter
+    messageId: msgId,
+    ReplyToId: message.replyToId,
+    ReplyToBody: message.replyToBody,
     OriginatingChannel: "xmpp" as const,
     OriginatingTo: `xmpp:${message.isGroup ? message.roomJid : senderBare}`,
-    CommandAuthorized: commandAuthorized,
+    CommandAuthorized: access.isOwner,
+    InboundAccessAuthorized: true,
   });
 
-  // Record the inbound message ID for potential reaction fallback.
-  // This helps when AI passes wrong messageId — we can use the most recent
-  // message as fallback.
-  //
-  // For MUC: MUST use stanzaId (XEP-0359) per XEP-0444 — the stanza's `id`
-  // attr MUST NOT be used.
-  //
-  // For DMs: target the SENDER's <origin-id> (XEP-0359). Per XEP-0444 a 1:1
-  // reaction references the message by the *sender's* stable id, and
-  // Conversations (and Dino/modern Gajim) index their OWN sent messages by the
-  // origin-id they attached — NOT by the recipient-server stanza-id (which is
-  // assigned per-archive and differs between the two parties on the same
-  // server). We previously cycled rawStanzaId (sender `id` attr) and then
-  // stanzaId (recipient-server XEP-0359 id); 2026-05-31 confirmed neither
-  // renders in Conversations — the reaction silently targets nothing and
-  // Pierce ends up narrating "Added 👍" as a plain message instead. origin-id
-  // is the value XEP-0444 actually specifies for 1:1. Falls back to the `id`
-  // attribute (== rawStanzaId), then the recipient stanza-id, only when the
-  // sender didn't attach an origin-id.
   const inboundMessageId = message.isGroup
-    ? (message.stanzaId || message.id)  // MUC: stanza-id is required for reactions
-    : (message.originId || message.rawStanzaId || message.id || message.stanzaId);  // DM: sender origin-id
+    ? message.stanzaId || message.id
+    : message.originId || message.rawStanzaId || message.id || message.stanzaId;
   if (inboundMessageId) {
-    // For DMs, record with senderBare
-    if (!message.isGroup && senderBare) {
-      recordInboundMessageId(accountId, senderBare, inboundMessageId);
-      console.log(`[XMPP:inbound] Recorded inbound message ID: ${inboundMessageId} (originId=${message.originId}, rawStanzaId=${message.rawStanzaId}, stanzaId=${message.stanzaId}, id=${message.id}) from ${senderBare}`);
-    }
-    // For MUC/group, also record with roomJid so fallback lookup can find it
-    // (AI will use roomJid as target when reacting to group messages)
-    if (message.isGroup && message.roomJid) {
-      recordInboundMessageId(accountId, message.roomJid, inboundMessageId);
-      console.log(`[XMPP:inbound] Recorded inbound message ID for group: ${inboundMessageId} from room ${message.roomJid}`);
-    }
+    recordInboundMessageId(
+      accountId,
+      message.isGroup ? message.roomJid! : senderBare,
+      inboundMessageId
+    );
   }
 
   await rt.channel.session.recordInboundSession({
     storePath,
     sessionKey: ctx.SessionKey ?? route.sessionKey,
     ctx,
-    // Only update lastRoute for DMs, not groups (to avoid main session showing as group)
-    updateLastRoute: message.isGroup ? undefined : {
-      sessionKey: route.mainSessionKey,
-      channel: "xmpp",
-      to: senderBare,
-      accountId,
-    },
+    updateLastRoute: message.isGroup
+      ? undefined
+      : {
+          sessionKey: route.mainSessionKey,
+          channel: "xmpp",
+          to: senderBare,
+          accountId,
+        },
     onRecordError: (err: unknown) => {
       log?.error?.(`[XMPP] Failed to record inbound session: ${String(err)}`);
     },
   });
 
-  // Send typing indicator immediately when agent starts processing
-  const replyTo = message.isGroup ? message.roomJid! : bareJid(senderBare);
-  await sendChatState(accountId, replyTo, "composing", log);
-
-  // Track whether the turn produced deliverable text. A reaction-only turn
-  // (action=react) or a silent/NO_REPLY turn never invokes the deliver callback,
-  // so deliverReply — which clears "composing" with an "active" on completion —
-  // never runs, and the typing indicator hangs ("Pierce is typing" long after
-  // he's done) until the client times out. We clear it explicitly below.
+  const replyTo = message.isGroup ? message.roomJid! : senderBare;
+  await sendChatState(accountId, replyTo, "composing", log, message.isGroup);
   let delivered = false;
 
-  log?.info?.(`[XMPP] Dispatching reply for session ${route.sessionKey}`);
-
-  // Dispatch reply
   await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx,
     cfg,
     dispatcherOptions: {
       responsePrefix: "",
-      deliver: async (payload: { text?: string; markdown?: string; mediaUrl?: string; mediaUrls?: string[] }) => {
+      deliver: async (payload: ReplyPayload) => {
         delivered = true;
-        log?.info?.(`[XMPP] Deliver callback invoked with: text=${payload.text?.length ?? 0} chars, markdown=${payload.markdown?.length ?? 0} chars`);
-        const replyTarget = message.isGroup ? message.roomJid! : bareJid(senderIdentity);
-        debouncedDeliver(replyTarget, payload, async (combined) => {
-          await deliverReply(combined, message, config, accountId, senderIdentity, log, setStatus);
-        });
+        debouncedDeliver(
+          `${accountId}:${replyTo}`,
+          payload,
+          async (combined) => {
+            await deliverReply(combined, message, accountId, senderIdentity, log, setStatus);
+          },
+          (err) => {
+            const error = err instanceof Error ? err.message : String(err);
+            log?.error?.(`[XMPP] Debounced reply delivery failed: ${error}`);
+            setStatus?.({ accountId, lastError: error });
+          }
+        );
       },
     },
   });
 
-  // Reaction-only or silent turn: deliverReply never ran, so the "composing"
-  // state set on start would hang. Clear it now. (Text replies clear it inside
-  // deliverReply when the debounced send fires.)
-  if (!delivered) {
-    await sendChatState(accountId, replyTo, "active", log);
-  }
-
-  log?.info?.(`[XMPP] Reply dispatch completed`);
+  if (!delivered) await sendChatState(accountId, replyTo, "active", log, message.isGroup);
 }
 
-// Debounce accumulator: collect buffered block dispatches into one message
-const _pendingDeliveries = new Map<string, {
-  texts: string[];
-  mediaUrls: string[];
-  deliverFn: (combined: { text?: string; markdown?: string; mediaUrl?: string; mediaUrls?: string[] }) => Promise<void> | void;
-  timer: ReturnType<typeof setTimeout> | null;
-}>();
-const DEBOUNCE_MS = 500;
+type ReplyPayload = { text?: string; markdown?: string };
+
+const pendingDeliveries = new Map<
+  string,
+  {
+    texts: string[];
+    deliver: (combined: ReplyPayload) => Promise<void> | void;
+    onError: (err: unknown) => void;
+    timer?: ReturnType<typeof setTimeout>;
+  }
+>();
 
 function debouncedDeliver(
   key: string,
-  payload: { text?: string; markdown?: string; mediaUrl?: string; mediaUrls?: string[] },
-  deliverFn: (combined: { text?: string; markdown?: string; mediaUrl?: string; mediaUrls?: string[] }) => Promise<void> | void
+  payload: ReplyPayload,
+  deliver: (combined: ReplyPayload) => Promise<void> | void,
+  onError: (err: unknown) => void
 ): void {
-  const pending = _pendingDeliveries.get(key);
   const text = payload.markdown || payload.text || "";
-  const mediaUrl = payload.mediaUrl;
-  const mediaUrls = payload.mediaUrls;
+  const pending = pendingDeliveries.get(key) ?? { texts: [], deliver, onError };
+  if (text) pending.texts.push(text);
+  if (pending.timer) clearTimeout(pending.timer);
+  pendingDeliveries.set(key, pending);
 
-  if (pending) {
-    if (text) pending.texts.push(text);
-    if (mediaUrl) pending.mediaUrls.push(mediaUrl);
-    if (mediaUrls) pending.mediaUrls.push(...mediaUrls);
-    clearTimeout(pending.timer as ReturnType<typeof setTimeout>);
-  } else {
-    _pendingDeliveries.set(key, {
-      texts: text ? [text] : [],
-      mediaUrls: mediaUrl ? [mediaUrl] : (mediaUrls ? [...mediaUrls] : []),
-      deliverFn,
-      timer: null,
-    });
-  }
-
-  const entry = _pendingDeliveries.get(key)!;
-  entry.timer = setTimeout(async () => {
-    _pendingDeliveries.delete(key);
-    const combined = {
-      ...payload,
-      text: entry.texts.join("\n\n"),
-      markdown: entry.texts.join("\n\n"),
-      mediaUrl: entry.mediaUrls[0] || undefined,
-      mediaUrls: entry.mediaUrls.length > 0 ? entry.mediaUrls : undefined,
-    };
-    await entry.deliverFn(combined);
-  }, DEBOUNCE_MS);
+  pending.timer = setTimeout(() => {
+    pendingDeliveries.delete(key);
+    const combinedText = pending.texts.join("\n\n");
+    void Promise.resolve(pending.deliver({ text: combinedText, markdown: combinedText })).catch(
+      pending.onError
+    );
+  }, 500);
 }
 
-/**
- * Deliver a reply to the sender
- */
 async function deliverReply(
-  payload: { text?: string; markdown?: string; mediaUrl?: string; mediaUrls?: string[] },
+  payload: ReplyPayload,
   message: XmppInboundMessage,
-  config: XmppConfig,
   accountId: string,
   senderIdentity: string,
   log?: Logger,
   setStatus?: (patch: ChannelAccountStatusPatch) => void
 ): Promise<void> {
-  log?.info?.(`[XMPP] deliverReply called: text=${!!payload.text} markdown=${!!payload.markdown} media=${!!(payload.mediaUrl || payload.mediaUrls?.length)}`);
-
-  const xmppClient = activeClients.get(accountId);
-  if (!xmppClient) {
-    log?.error?.(`[XMPP] No active client for reply (accountId: ${accountId})`);
-    return;
-  }
-
-  // For groups: reply to the room
-  // For DMs: reply to the sender's bare JID
+  const client = activeClients.get(accountId);
   const replyTo = message.isGroup ? message.roomJid! : bareJid(senderIdentity);
-  const msgType = message.isGroup ? "groupchat" : "chat";
-  const textToSend = payload.markdown || payload.text;
-  
-  log?.info?.(`[XMPP] Will reply to: ${replyTo} (type: ${msgType})`);
-  log?.info?.(`[XMPP] Reply text: ${textToSend?.slice(0, 100)}...`);
-  
-  // Send typing indicator (XEP-0085) before response
-  await sendChatState(accountId, replyTo, "composing", log);
-  
-  // Collect all media URLs
-  const allMediaUrls: string[] = [];
-  if (payload.mediaUrl) {
-    allMediaUrls.push(payload.mediaUrl);
-  }
-  if (payload.mediaUrls && payload.mediaUrls.length > 0) {
-    allMediaUrls.push(...payload.mediaUrls);
-  }
-  
-  // If we have media URLs, use HTTP Upload
-  if (allMediaUrls.length > 0) {
-    log?.debug?.(`[XMPP] Sending ${allMediaUrls.length} media item(s) to ${replyTo}`);
-    
-    for (let i = 0; i < allMediaUrls.length; i++) {
-      const mediaUrl = allMediaUrls[i];
-      // Only include caption on first media
-      const caption = i === 0 ? textToSend : undefined;
-      
-      log?.debug?.(`[XMPP] Media ${i + 1}/${allMediaUrls.length}: ${mediaUrl.slice(0, 80)}`);
-      
-      // Resolve local files before calling sendXmppMedia (which only handles network)
-      let resolvedMedia: import("./outbound.js").ResolvedMedia | undefined;
-      try {
-        const url = new URL(mediaUrl);
-        if (url.protocol === "file:") {
-          const { readFileUrl } = await import("./file-read.js");
-          resolvedMedia = readFileUrl(mediaUrl, log);
-        }
-      } catch {
-        // Not a valid URL — treat as local file path
-        const { readLocalFile } = await import("./file-read.js");
-        const result = readLocalFile(mediaUrl, log);
-        if (!result) {
-          log?.error?.(`[XMPP] File not found: ${mediaUrl}`);
-          continue;
-        }
-        resolvedMedia = result;
-      }
-      
-      const result = await sendXmppMedia(config, replyTo, mediaUrl, caption, {
-        log,
-        accountId,
-        resolvedMedia,
-      });
-      
-      if (!result.ok) {
-        log?.error?.(`[XMPP] Failed to send media: ${result.error}`);
-      } else {
-        log?.debug?.(`[XMPP] Media sent to ${replyTo}`);
-        // Update lastOutboundAt
-        setStatus?.({ accountId, lastOutboundAt: Date.now() });
-      }
-    }
-    // Clear typing indicator
-    await sendChatState(accountId, replyTo, "active", log);
+  if (!client) {
+    const error = `No active client for reply on account ${accountId}`;
+    log?.error?.(`[XMPP] ${error}`);
+    setStatus?.({ accountId, lastError: error });
     return;
   }
-  
-  // No media, send text only
-  if (!textToSend) {
-    log?.debug?.("[XMPP] No text or media to send, skipping");
-    await sendChatState(accountId, replyTo, "active", log);
+
+  const text = payload.markdown || payload.text;
+  if (!text) {
+    await sendChatState(accountId, replyTo, "active", log, message.isGroup);
     return;
   }
-  
-  log?.info?.(`[XMPP] Reply to ${replyTo}: ${textToSend.slice(0, 50)}...`);
 
-  // XEP-0461 (Message Replies) — when the trigger message has a usable ID,
-  // thread our response under it. Built once here and reused across the
-  // OMEMO and plaintext send paths below. `senderIdentity` is already the
-  // correct JID for the spec: bare for DMs, full occupant JID for MUCs.
-  const originalMsgId = message.id;
-  const replyPointerEl = originalMsgId
-    ? buildReplyElement(originalMsgId, senderIdentity)
-    : undefined;
-
-  // Check if we should encrypt the reply
-  // Encrypt if: OMEMO enabled AND (DM OR OMEMO-capable MUC)
-  // When OMEMO is enabled, ALL outbound messages must be encrypted.
-  const omemoEnabled = isOmemoEnabled(accountId);
-  const shouldEncryptDm = !message.isGroup && omemoEnabled;
-  const shouldEncryptMuc = message.isGroup && omemoEnabled && isRoomOmemoCapable(accountId, bareJid(replyTo));
-  
-  if (shouldEncryptDm) {
-    // Encrypt with OMEMO for DMs
-    const recipientJid = message.senderJidForOmemo || bareJid(senderIdentity);
-    log?.debug?.(`[XMPP] Encrypting reply with OMEMO for ${recipientJid}`);
-    
-    try {
-      const encryptedElement = await encryptOmemoMessage(accountId, recipientJid, textToSend, log);
-      if (encryptedElement) {
-        // XEP-0461 reply pointer rides as a plaintext sibling of <encrypted>;
-        // reply-aware clients use it before decryption to locate the original
-        // in local history. Quoted-text fallback is omitted intentionally —
-        // the OMEMO plaintext body is the canned "encrypted message" notice,
-        // not real content, so a body-range XEP-0428 marker doesn't apply.
-        const extraChildren = replyPointerEl ? [replyPointerEl] : [];
-        const encryptedStanza = buildOmemoMessageStanza(replyTo, encryptedElement, "chat", extraChildren);
-        log?.debug?.(`[XMPP] Sending OMEMO encrypted reply to ${replyTo}${replyPointerEl ? ` (threaded to ${originalMsgId})` : ""}`);
-        await xmppClient.send(encryptedStanza);
-        log?.info?.(`[XMPP] Successfully sent OMEMO encrypted reply to ${replyTo}`);
-        
-        // Update lastOutboundAt and clear typing indicator
-        setStatus?.({ accountId, lastOutboundAt: Date.now() });
-        await sendChatState(accountId, replyTo, "active", log);
-        return;
-      } else {
-        log?.warn?.(`[XMPP] OMEMO encryption failed for DM, sending warning instead of plaintext reply`);
-        const warningStanza = xml(
-          "message",
-          { to: replyTo, type: "chat", id: generateMessageId() },
-          xml("body", {}, "⚠️ Failed to encrypt reply (OMEMO encryption returned empty). Message not sent for security.")
-        );
-        await xmppClient.send(warningStanza);
-        await sendChatState(accountId, replyTo, "active", log);
-        return;
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      log?.error?.(`[XMPP] OMEMO encryption error: ${errMsg}, sending warning instead of plaintext reply`);
-      const warningStanza = xml(
-        "message",
-        { to: replyTo, type: "chat", id: generateMessageId() },
-        xml("body", {}, `⚠️ Failed to encrypt reply: ${errMsg}. Message not sent for security.`)
-      );
-      await xmppClient.send(warningStanza);
-      await sendChatState(accountId, replyTo, "active", log);
-      return;
+  const children: ReturnType<typeof xml>[] = [];
+  let body = text;
+  if (message.id) {
+    const { prefix, length } = buildReplyFallbackPrefix(message.body || "");
+    if (length > 0) {
+      body = prefix + text;
+      children.push(buildReplyFallbackMarker(0, length));
     }
-  } else if (shouldEncryptMuc) {
-    // Encrypt with OMEMO for MUC rooms
-    const roomJid = bareJid(replyTo);
-    log?.debug?.(`[XMPP] Encrypting MUC reply with OMEMO for room ${roomJid}`);
-    
-    try {
-      const encryptedElement = await encryptMucOmemoMessage(accountId, roomJid, textToSend, log);
-      if (encryptedElement) {
-        // XEP-0461 reply pointer as plaintext sibling (see DM path above).
-        const extraChildren = replyPointerEl ? [replyPointerEl] : [];
-        const encryptedStanza = buildOmemoMessageStanza(replyTo, encryptedElement, "groupchat", extraChildren);
-        log?.debug?.(`[XMPP] Sending MUC OMEMO encrypted reply to ${replyTo}${replyPointerEl ? ` (threaded to ${originalMsgId})` : ""}`);
-        await xmppClient.send(encryptedStanza);
-        log?.info?.(`[XMPP] Successfully sent MUC OMEMO encrypted reply to ${replyTo}`);
-        
-        // Update lastOutboundAt and clear typing indicator
-        setStatus?.({ accountId, lastOutboundAt: Date.now() });
-        await sendChatState(accountId, replyTo, "active", log);
-        return;
-      } else {
-        log?.warn?.(`[XMPP] MUC OMEMO encryption failed, sending warning instead of plaintext reply`);
-        const warningStanza = xml(
-          "message",
-          { to: replyTo, type: "groupchat", id: generateMessageId() },
-          xml("body", {}, "⚠️ Failed to encrypt reply (OMEMO encryption returned empty). Message not sent for security.")
-        );
-        await xmppClient.send(warningStanza);
-        await sendChatState(accountId, replyTo, "active", log);
-        return;
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      log?.error?.(`[XMPP] MUC OMEMO encryption error: ${errMsg}, sending warning instead of plaintext reply`);
-      const warningStanza = xml(
-        "message",
-        { to: replyTo, type: "groupchat", id: generateMessageId() },
-        xml("body", {}, `⚠️ Failed to encrypt reply: ${errMsg}. Message not sent for security.`)
-      );
-      await xmppClient.send(warningStanza);
-      await sendChatState(accountId, replyTo, "active", log);
-      return;
-    }
+    children.push(buildReplyElement(message.id, message.isGroup ? message.from : senderIdentity));
   }
-
-  // Plaintext send path (OMEMO disabled, or recipient not OMEMO-capable).
-  //
-  // Build a XEP-0461 reply with a XEP-0428 fallback so reply-aware clients
-  // render this as a quote-thread (and strip the `> quoted` prefix from the
-  // body), while older clients still see the quoted context inline.
-  const messageId = generateMessageId();
-  const replyChildren: ReturnType<typeof xml>[] = [];
-
-  let bodyText = textToSend;
-  if (replyPointerEl) {
-    const { prefix, length: prefixLen } = buildReplyFallbackPrefix(message.body || "");
-    if (prefixLen > 0) {
-      bodyText = prefix + textToSend;
-      replyChildren.push(buildReplyFallbackMarker(0, prefixLen));
-    }
-    replyChildren.push(replyPointerEl);
-  }
-  replyChildren.push(xml("body", {}, bodyText));
-
-  const reply = xml(
-    "message",
-    { to: replyTo, type: msgType, id: messageId },
-    ...replyChildren
-  );
-
-  log?.debug?.(`[XMPP] Sending stanza: to=${replyTo} type=${msgType} id=${messageId} replyTo=${originalMsgId || "none"}`);
+  children.push(xml("body", {}, body));
 
   try {
-    await xmppClient.send(reply);
-    log?.info?.(`[XMPP] Successfully sent reply to ${replyTo}: ${textToSend.slice(0, 100)}...`);
+    await client.send(
+      xml(
+        "message",
+        {
+          to: replyTo,
+          type: message.isGroup ? "groupchat" : "chat",
+          id: randomUUID(),
+        },
+        ...children
+      )
+    );
+    setStatus?.({ accountId, lastOutboundAt: Date.now() });
   } catch (err) {
-    log?.error?.(`[XMPP] Failed to send reply: ${err instanceof Error ? err.message : String(err)}`);
+    const error = err instanceof Error ? err.message : String(err);
+    log?.error?.(`[XMPP] Failed to send reply: ${error}`);
+    setStatus?.({ accountId, lastError: error });
+  } finally {
+    await sendChatState(accountId, replyTo, "active", log, message.isGroup);
   }
-  
-  // Update lastOutboundAt and clear typing indicator
-  setStatus?.({ accountId, lastOutboundAt: Date.now() });
-  await sendChatState(accountId, replyTo, "active", log);
 }
 
-/**
- * Handle inbound XMPP reaction (XEP-0444)
- * Routes inbound reactions to OpenClaw so the AI can see and process them
- */
+/** Route an authorized XEP-0444 reaction as a text event. */
 export async function handleInboundReaction(params: {
   reactedMessageId: string;
   emojis: string[];
@@ -577,134 +398,64 @@ export async function handleInboundReaction(params: {
   isGroup: boolean;
   roomJid?: string;
   senderNick?: string;
-  cfg: unknown;
+  cfg: OpenClawConfig;
   accountId: string;
   config: XmppConfig;
   log?: Logger;
   setStatus?: (patch: ChannelAccountStatusPatch) => void;
 }): Promise<void> {
-  const {
-    reactedMessageId,
-    emojis,
-    senderBare,
-    senderFull,
-    isGroup,
-    roomJid,
-    senderNick,
-    cfg,
-    accountId,
-    config,
-    log,
-    setStatus,
-  } = params;
+  const access = await authorizeSender(
+    {
+      senderBare: bareJid(params.senderBare).toLowerCase(),
+      senderFull: params.senderFull,
+      isGroup: params.isGroup,
+      roomJid: params.roomJid,
+      senderNick: params.senderNick,
+    },
+    params.accountId,
+    params.config,
+    false,
+    params.log
+  );
+  if (!access.allowed) return;
 
+  params.setStatus?.({ accountId: params.accountId, lastInboundAt: Date.now() });
   const rt = getXmppRuntime();
-
-  // Update last inbound timestamp
-  setStatus?.({
-    accountId,
-    lastInboundAt: Date.now(),
-  });
-
-  // For reactions, we need to check if the sender is allowed
-  const allowFromList = normalizeAllowFrom(config.allowFrom);
-  const isOwner = isSenderAllowed(allowFromList, senderBare);
-
-  if (isGroup) {
-    // For groups: check groupPolicy first
-    const groupPolicy = config.groupPolicy ?? "open";
-
-    if (groupPolicy === "open") {
-      log?.debug?.(`[XMPP] Group reaction allowed (groupPolicy: open)`);
-    } else {
-      const groupAllowList = normalizeAllowFrom(config.groupAllowFrom ?? config.allowFrom);
-      
-      // Try to get the sender's real JID from MUC occupant tracking
-      const realSenderJid = (senderNick && roomJid) 
-        ? getOccupantRealJid(accountId, roomJid, senderNick) 
-        : null;
-      
-      if (realSenderJid) {
-        // Non-anonymous room - check real JID against allowlist
-        if (!isSenderAllowed(groupAllowList, realSenderJid)) {
-          log?.debug?.(`[XMPP] Group reaction blocked: ${realSenderJid} (real JID for ${senderNick}) not in groupAllowFrom`);
-          return;
-        }
-        log?.debug?.(`[XMPP] Group reaction allowed: ${realSenderJid} in groupAllowFrom`);
-      } else {
-        // Anonymous/semi-anonymous room - can't verify real JID
-        log?.debug?.(`[XMPP] Group reaction allowed (anonymous room, cannot verify real JID for ${senderNick})`);
-      }
-    }
-  } else {
-    // For direct chats: owners (allowFrom) always have access
-    if (!isOwner) {
-      const dmPolicy = config.dmPolicy ?? "open";
-
-      if (dmPolicy === "disabled") {
-        log?.debug?.(`[XMPP] Direct chat reaction blocked (dmPolicy: disabled, guest ${senderBare})`);
-        return;
-      } else if (dmPolicy === "allowlist") {
-        const dmAllowList = normalizeAllowFrom(config.dmAllowlist);
-        if (!isSenderAllowed(dmAllowList, senderBare)) {
-          log?.debug?.(`[XMPP] Direct chat reaction blocked: guest ${senderBare} not in dmAllowlist`);
-          return;
-        }
-      }
-    }
-  }
-
-  // For groups, sender identity is the full occupant JID; for DMs, it's the bare JID
-  const senderIdentity = isGroup ? senderFull : senderBare;
-
-  log?.info?.(`[XMPP] Inbound reaction: from=${senderIdentity} emojis="${emojis.join(", ")}" onMessage=${reactedMessageId}`);
-
-  // Create a special body that the AI can understand as a reaction
-  // Format: "[reaction] 👋 on your message"
-  const reactionText = `[reaction] ${emojis.join(" ")} on your message "${reactedMessageId}"`;
-  
-  // DEBUG: Log what we're sending to the AI
-  log?.info?.(`[XMPP] Reaction text for AI: ${reactionText}`);
-  log?.info?.(`[XMPP] Providing ReactedMessageId=${reactedMessageId} for AI to use when reacting back`);
-
-  // Route to OpenClaw (same as regular messages)
+  const reactionText = `[reaction] ${params.emojis.join(" ")} on message "${params.reactedMessageId}"`;
   const route = rt.channel.routing.resolveAgentRoute({
-    cfg,
+    cfg: params.cfg,
     channel: "xmpp",
-    accountId,
+    accountId: params.accountId,
     peer: {
-      kind: isGroup ? "group" : "dm",
-      id: isGroup ? roomJid! : senderBare,
+      kind: params.isGroup ? "group" : "direct",
+      id: params.isGroup ? params.roomJid! : params.senderBare,
     },
   });
-
   const storePath = rt.channel.session.resolveStorePath(
-    (cfg as { session?: { store?: string } }).session?.store,
+    (params.cfg as { session?: { store?: string } }).session?.store,
     { agentId: route.agentId }
   );
-
-  // Build the context with reaction info
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: reactionText,
     RawBody: reactionText,
     CommandBody: reactionText,
-    From: `xmpp:${senderIdentity}`,
-    To: `xmpp:${config.jid}`,
+    From: `xmpp:${access.senderIdentity}`,
+    To: `xmpp:${params.config.jid}`,
     SessionKey: route.sessionKey,
-    AccountId: accountId,
-    ChatType: isGroup ? "group" : "direct",
-    ConversationLabel: isGroup ? roomJid : senderBare,
-    SenderName: senderNick || senderBare.split("@")[0],
-    SenderId: senderIdentity,
+    AccountId: params.accountId,
+    ChatType: params.isGroup ? "group" : "direct",
+    ConversationLabel: params.isGroup ? params.roomJid : params.senderBare,
+    SenderName: params.senderNick || params.senderBare.split("@")[0],
+    SenderId: access.senderIdentity,
     Provider: "xmpp",
     Surface: "xmpp",
     MessageSid: `reaction_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     OriginatingChannel: "xmpp" as const,
-    OriginatingTo: `xmpp:${isGroup ? roomJid : senderBare}`,
-    CommandAuthorized: isOwner || (config.dmPolicy ?? "open") === "open",
-    // Include reaction-specific metadata
-    ReactionEmojis: emojis,
-    ReactedMessageId: reactedMessageId,
+    OriginatingTo: `xmpp:${params.isGroup ? params.roomJid : params.senderBare}`,
+    CommandAuthorized: access.isOwner,
+    InboundAccessAuthorized: true,
+    ReactionEmojis: params.emojis,
+    ReactedMessageId: params.reactedMessageId,
     IsReaction: true,
   });
 
@@ -712,30 +463,25 @@ export async function handleInboundReaction(params: {
     storePath,
     sessionKey: ctx.SessionKey ?? route.sessionKey,
     ctx,
-    updateLastRoute: isGroup ? undefined : {
-      sessionKey: route.mainSessionKey,
-      channel: "xmpp",
-      to: senderBare,
-      accountId,
-    },
+    updateLastRoute: params.isGroup
+      ? undefined
+      : {
+          sessionKey: route.mainSessionKey,
+          channel: "xmpp",
+          to: params.senderBare,
+          accountId: params.accountId,
+        },
     onRecordError: (err: unknown) => {
-      log?.error?.(`[XMPP] Failed to record inbound reaction session: ${String(err)}`);
+      params.log?.error?.(`[XMPP] Failed to record inbound reaction session: ${String(err)}`);
     },
   });
 
-  log?.info?.(`[XMPP] Reaction dispatching to AI...`);
-  
-  // Dispatch reaction to AI for processing
   await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx,
-    cfg,
+    cfg: params.cfg,
     dispatcherOptions: {
       responsePrefix: "",
-      deliver: async () => {
-        log?.debug?.(`[XMPP] Reaction deliver callback (no auto-reply for reactions)`);
-      },
+      deliver: async () => undefined,
     },
   });
-
-  log?.info?.(`[XMPP] Reaction dispatch completed`);
 }

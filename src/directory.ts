@@ -2,8 +2,9 @@
  * XMPP directory adapter - contact/room listings
  */
 
-import type { OpenClawConfig, RuntimeEnv } from "openclaw/plugin-sdk";
-import type { ChannelDirectoryEntry, ChannelResolveResult, XmppConfig } from "./types.js";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
+import type { ChannelDirectoryEntry, ChannelResolveResult } from "./types.js";
 import { resolveXmppAccount } from "./accounts.js";
 import { bareJid } from "./config-schema.js";
 import { looksLikeXmppJid } from "./normalize.js";
@@ -88,17 +89,17 @@ export async function resolveXmppTargets(params: {
 }): Promise<ChannelResolveResult[]> {
   const { cfg, accountId, inputs, kind } = params;
   const account = resolveXmppAccount({ cfg, accountId });
-  
+
   const results: ChannelResolveResult[] = [];
-  
+
   for (const input of inputs) {
     const trimmed = input.trim().replace(/^(xmpp|jabber):/i, "");
-    
+
     if (!trimmed) {
       results.push({ input, resolved: false, note: "empty input" });
       continue;
     }
-    
+
     // Check if it looks like a JID
     if (looksLikeXmppJid(trimmed)) {
       const normalized = bareJid(trimmed);
@@ -110,15 +111,15 @@ export async function resolveXmppTargets(params: {
       });
       continue;
     }
-    
+
     // Try to find in allowFrom or groups based on kind
     if (kind === "user") {
       const allowFrom = account.config?.allowFrom ?? [];
-      const match = allowFrom.find((jid) => 
-        jid !== "*" && (
-          bareJid(jid).toLowerCase().includes(trimmed.toLowerCase()) ||
-          bareJid(jid).split("@")[0].toLowerCase() === trimmed.toLowerCase()
-        )
+      const match = allowFrom.find(
+        (jid) =>
+          jid !== "*" &&
+          (bareJid(jid).toLowerCase().includes(trimmed.toLowerCase()) ||
+            bareJid(jid).split("@")[0].toLowerCase() === trimmed.toLowerCase())
       );
       if (match) {
         results.push({
@@ -131,9 +132,10 @@ export async function resolveXmppTargets(params: {
       }
     } else if (kind === "group") {
       const groups = account.config?.groups ?? [];
-      const match = groups.find((room) =>
-        bareJid(room).toLowerCase().includes(trimmed.toLowerCase()) ||
-        bareJid(room).split("@")[0].toLowerCase() === trimmed.toLowerCase()
+      const match = groups.find(
+        (room) =>
+          bareJid(room).toLowerCase().includes(trimmed.toLowerCase()) ||
+          bareJid(room).split("@")[0].toLowerCase() === trimmed.toLowerCase()
       );
       if (match) {
         results.push({
@@ -145,10 +147,10 @@ export async function resolveXmppTargets(params: {
         continue;
       }
     }
-    
+
     results.push({ input, resolved: false, note: "not found" });
   }
-  
+
   return results;
 }
 

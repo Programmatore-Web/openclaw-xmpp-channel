@@ -1,8 +1,8 @@
 {
   "id": "xmpp",
   "name": "XMPP Channel",
-  "description": "XMPP/Jabber channel plugin for Prosody, ejabberd, and other XMPP servers",
-  "version": "4.1.0",
+  "description": "Minimal text-only XMPP/Jabber channel plugin for OpenClaw",
+  "version": "4.1.1",
   "channels": [
     "xmpp"
   ],
@@ -21,7 +21,7 @@
       },
       "server": {
         "type": "string",
-        "description": "XMPP server hostname (defaults to JID domain)"
+        "description": "Physical TCP connection host (defaults to the JID domain; does not change the XMPP domain)"
       },
       "port": {
         "type": "number",
@@ -40,11 +40,6 @@
         "type": "string",
         "description": "Account display name"
       },
-      "configWrites": {
-        "type": "boolean",
-        "default": true,
-        "description": "Allow agent to modify config (add users to allowlist, etc.)"
-      },
       "dmPolicy": {
         "type": "string",
         "enum": [
@@ -53,8 +48,8 @@
           "pairing",
           "allowlist"
         ],
-        "default": "open",
-        "description": "Guest direct chat policy: disabled (owners only), open (allow all), pairing (require approval), allowlist (only allowFrom)"
+        "default": "pairing",
+        "description": "Guest direct chat policy: disabled (owners only), open (explicit allow all), pairing (require approval), allowlist (only dmAllowlist)"
       },
       "groupPolicy": {
         "type": "string",
@@ -62,8 +57,8 @@
           "open",
           "allowlist"
         ],
-        "default": "open",
-        "description": "Group message policy"
+        "default": "allowlist",
+        "description": "Group message policy; allowlist requires a verified real sender JID"
       },
       "allowFrom": {
         "type": "array",
@@ -100,18 +95,9 @@
             "type": "boolean",
             "default": false,
             "description": "Enable XEP-0444 message reactions"
-          },
-          "sendMessage": {
-            "type": "boolean",
-            "default": true,
-            "description": "Enable send message action"
           }
         },
-        "description": "Action configuration"
-      },
-      "messagePrefix": {
-        "type": "string",
-        "description": "Inbound message prefix"
+        "description": "Optional reaction support"
       },
       "heartbeatVisibility": {
         "type": "string",
@@ -142,7 +128,7 @@
             },
             "server": {
               "type": "string",
-              "description": "XMPP server hostname"
+              "description": "Physical TCP connection host (does not change the XMPP domain)"
             },
             "port": {
               "type": "number",
@@ -165,11 +151,6 @@
               "type": "boolean",
               "default": true,
               "description": "Whether enabled"
-            },
-            "configWrites": {
-              "type": "boolean",
-              "default": true,
-              "description": "Allow agent config modifications"
             },
             "dmPolicy": {
               "type": "string",
@@ -219,11 +200,14 @@
             },
             "actions": {
               "type": "object",
-              "description": "Action configuration"
-            },
-            "messagePrefix": {
-              "type": "string",
-              "description": "Inbound message prefix"
+              "properties": {
+                "reactions": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Enable XEP-0444 message reactions"
+                }
+              },
+              "description": "Optional reaction support"
             },
             "heartbeatVisibility": {
               "type": "string",
@@ -333,7 +317,7 @@
           },
           "server": {
             "type": "string",
-            "description": "XMPP server hostname (defaults to JID domain)"
+            "description": "Physical TCP connection host (defaults to the JID domain; does not change the XMPP domain)"
           },
           "port": {
             "type": "number",
@@ -352,11 +336,6 @@
             "type": "string",
             "description": "Account display name"
           },
-          "configWrites": {
-            "type": "boolean",
-            "default": true,
-            "description": "Allow agent to modify config (add users to allowlist, etc.)"
-          },
           "dmPolicy": {
             "type": "string",
             "enum": [
@@ -365,8 +344,8 @@
               "pairing",
               "allowlist"
             ],
-            "default": "open",
-            "description": "Guest direct chat policy: disabled (owners only), open (allow all), pairing (require approval), allowlist (only allowFrom)"
+            "default": "pairing",
+            "description": "Guest direct chat policy: disabled (owners only), open (explicit allow all), pairing (require approval), allowlist (only dmAllowlist)"
           },
           "groupPolicy": {
             "type": "string",
@@ -374,8 +353,8 @@
               "open",
               "allowlist"
             ],
-            "default": "open",
-            "description": "Group message policy"
+            "default": "allowlist",
+            "description": "Group message policy; allowlist requires a verified real sender JID"
           },
           "allowFrom": {
             "type": "array",
@@ -412,18 +391,9 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Enable XEP-0444 message reactions"
-              },
-              "sendMessage": {
-                "type": "boolean",
-                "default": true,
-                "description": "Enable send message action"
               }
             },
-            "description": "Action configuration"
-          },
-          "messagePrefix": {
-            "type": "string",
-            "description": "Inbound message prefix"
+            "description": "Optional reaction support"
           },
           "heartbeatVisibility": {
             "type": "string",
@@ -454,7 +424,7 @@
                 },
                 "server": {
                   "type": "string",
-                  "description": "XMPP server hostname"
+                  "description": "Physical TCP connection host (does not change the XMPP domain)"
                 },
                 "port": {
                   "type": "number",
@@ -477,11 +447,6 @@
                   "type": "boolean",
                   "default": true,
                   "description": "Whether enabled"
-                },
-                "configWrites": {
-                  "type": "boolean",
-                  "default": true,
-                  "description": "Allow agent config modifications"
                 },
                 "dmPolicy": {
                   "type": "string",
@@ -531,11 +496,14 @@
                 },
                 "actions": {
                   "type": "object",
-                  "description": "Action configuration"
-                },
-                "messagePrefix": {
-                  "type": "string",
-                  "description": "Inbound message prefix"
+                  "properties": {
+                    "reactions": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Enable XEP-0444 message reactions"
+                    }
+                  },
+                  "description": "Optional reaction support"
                 },
                 "heartbeatVisibility": {
                   "type": "string",
@@ -628,7 +596,7 @@
         }
       },
       "label": "XMPP",
-      "description": "XMPP/Jabber channel with single- or multi-account support, DM/group policies, OMEMO, and XEP media/typing/reactions.",
+      "description": "Minimal XMPP/Jabber text channel with fail-closed DM/group defaults and multi-account support.",
       "uiHints": {
         "": {
           "label": "XMPP",
@@ -644,7 +612,7 @@
         },
         "server": {
           "label": "Server",
-          "help": "XMPP server hostname (defaults to the JID domain)."
+          "help": "Physical TCP connection host. Defaults to the JID domain and does not change the logical XMPP domain used for authentication."
         },
         "port": {
           "label": "Port",
@@ -665,10 +633,6 @@
         "accounts": {
           "label": "Accounts",
           "help": "Multi-account map keyed by account id; each entry mirrors the single-account fields."
-        },
-        "configWrites": {
-          "label": "Config Writes",
-          "help": "Allow the agent to modify config (e.g. add users to the allowlist) in response to channel events."
         }
       }
     }

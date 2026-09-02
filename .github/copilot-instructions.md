@@ -1,279 +1,73 @@
-# OpenClaw XMPP Channel Plugin - Copilot Instructions
+# OpenClaw XMPP channel instructions
 
-## Project Overview
-This is an **OpenClaw Channel Plugin** enabling XMPP/Jabber connectivity (Prosody, ejabberd, etc.). It bridges XMPP messaging with the OpenClaw gateway.
+This repository provides a minimal, text-only XMPP channel for OpenClaw.
 
-**Core Stack:** TypeScript, Node.js, `@xmpp/client` (xmpp.js), Zod  
-**Reference:** `openclaw/openclaw/extensions/whatsapp` for complete plugin patterns
+## Security invariants
 
-## Architecture
+- Require STARTTLS before sending authentication credentials.
+- Default direct messages to `pairing` and groups to `allowlist`.
+- Treat empty allowlists as denying access; only an explicit `*` is a wildcard.
+- Authorize a sender before route resolution, session recording, model dispatch,
+  commands, or tools.
+- Under group allowlist policy, require the real bare JID supplied by XEP-0045
+  presence. A missing or stale identity is unauthorized.
+- Join and process only rooms explicitly listed in `groups`.
+- Ignore room invitations and presence subscription requests.
+- Do not add local-file reads, remote-content fetching, file transfer, or
+  application-layer encryption as part of general channel work.
 
-```
-src/
-├── index.ts           # Plugin entry, exports dock + handlers
-├── channel.ts         # Main channel plugin with all adapters
-├── accounts.ts        # Account resolution utilities
-├── config-schema.ts   # Zod schema for config validation
-├── monitor.ts         # XMPP connection lifecycle, inbound handling
-├── outbound.ts        # Send messages to XMPP
-├── onboarding.ts      # CLI setup wizard adapter
-├── actions.ts         # Message actions (reactions via XEP-0444)
-├── directory.ts       # Contact/room directory listings
-├── heartbeat.ts       # Heartbeat adapter for status checks
-├── normalize.ts       # JID normalization utilities
-├── status-issues.ts   # Status issue detection
-├── types.ts           # TypeScript interfaces
-├── runtime.ts         # Runtime getter/setter pattern
-└── declarations.d.ts  # Type declarations for SDK
-```
+## Maintained surface
 
-## Key Patterns
+- TCP XMPP client connection, STARTTLS, and SASL authentication
+- Direct and configured-MUC text messages
+- OpenClaw inbound/outbound routing and multi-account configuration
+- Reconnect, XEP-0198 Stream Management when supported by the client, and
+  XEP-0199 keepalive
+- XEP-0280 Message Carbons
+- XEP-0461 replies with XEP-0428 fallback text
+- XEP-0085 chat states and XEP-0333 read markers
+- Optional, dependency-light XEP-0444 reactions
+- XEP-0066 inbound URLs as text only, without fetching
 
-### Plugin Entry Point (`index.ts`)
-Follow OpenClaw's plugin registration pattern:
-```typescript
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
-import { xmppPlugin } from "./channel.js";
-import { setXmppRuntime } from "./runtime.js";
+## Source map
 
-const plugin = {
-  id: "xmpp",
-  name: "XMPP",
-  description: "XMPP channel plugin (Prosody, ejabberd)",
-  configSchema: emptyPluginConfigSchema(),
-  register(api: OpenClawPluginApi) {
-    setXmppRuntime(api.runtime);
-    api.registerChannel({ plugin: xmppPlugin });
-  },
-};
-export default plugin;
-```
-
-### Channel Plugin Structure (`channel.ts`)
-Implement full `ChannelPlugin` interface from `openclaw/plugin-sdk`:
-```typescript
-export const xmppPlugin = {
-  id: "xmpp",
-  meta: {
-    id: "xmpp",
-    label: "XMPP",
-    selectionLabel: "XMPP (Jabber/Prosody/ejabberd)",
-    docsPath: "/channels/xmpp",
-    blurb: "Connect to XMPP servers",
-    quickstartAllowFrom: true,
-  },
-  configSchema: buildChannelConfigSchema(XmppConfigSchema),
-  capabilities: { chatTypes: ["direct", "group"], reactions: true },
-  
-  // All adapters
-  onboarding: xmppOnboardingAdapter,
-  pairing: { idLabel: "xmppSenderId", normalizeAllowEntry: (e) => bareJid(e) },
-  config: { listAccountIds, resolveAccount, defaultAccountId, ... },
-  security: { resolveDmPolicy: ... },
-  groups: { resolveRequireMention: ... },
-  mentions: { stripPatterns: ... },
-  threading: { resolveReplyToMode, buildToolContext },
-  messaging: { normalizeTarget, targetResolver },
-  directory: { self, listPeers, listGroups },
-  actions: { listActions, supportsAction, handleAction },
-  outbound: { deliveryMode, resolveTarget, sendText },
-  gateway: { startAccount },
-  heartbeat: { checkReady, resolveRecipients },
-  status: { defaultRuntime, collectStatusIssues, probeAccount, ... },
-};
-```
-
-### Runtime Module (`runtime.ts`)
-Getter/setter pattern for runtime access:
-```typescript
-import type { PluginRuntime } from 'openclaw/plugin-sdk';
-
-let runtime: PluginRuntime | null = null;
-
-export function setXmppRuntime(next: PluginRuntime): void {
-  runtime = next;
-}
-
-export function getXmppRuntime(): PluginRuntime {
-  if (!runtime) throw new Error('XMPP runtime not initialized');
-  return runtime;
-}
-```
-
-### Gateway Lifecycle (`gateway` adapter)
-Persistent connection management with abort signal:
-```typescript
-gateway: {
-  startAccount: async (ctx: GatewayStartContext): Promise<GatewayStopResult> => {
-    const { account, cfg, abortSignal, log } = ctx;
-    const xmpp = client({ /* config */ });
-    
-    xmpp.on('stanza', async (stanza) => {
-      if (stanza.is('message')) {
-        await handleInboundMessage(stanza, cfg, account, log);
-      }
-    });
-    
-    await xmpp.start();
-    log?.info?.(`[${account.accountId}] XMPP connected`);
-    
-    let stopped = false;
-    abortSignal?.addEventListener('abort', () => {
-      if (stopped) return;
-      stopped = true;
-      xmpp.stop();
-    });
-    
-    return { stop: () => { stopped = true; xmpp.stop(); } };
-  },
-},
-```
-
-### Plugin Manifest (`openclaw.plugin.json`)
-- `id` and `channel.id` must be `"xmpp"`
-- `configSchema` defines user-configurable options with JSON Schema
-- Required fields: `jid`, `password`; optional: `server`, `port`, `groups`, `prosodyHttp`
-
-### XMPP Client Usage
-```typescript
-import { client, xml } from '@xmpp/client'
-
-// Always destructure JID for username
-const xmpp = client({
-  service: `xmpp://${config.server}:${config.port}`,
-  username: config.jid.split('@')[0],
-  password: config.password,
-  resource: config.resource ?? 'openclaw'
-})
-```
-
-### Message Handling
-- **Inbound:** Listen on `xmpp.on('stanza', ...)`, filter for `stanza.is('message')`
-- **Outbound direct:** `xml('message', { to: jid, type: 'chat' }, xml('body', {}, text))`
-- **Outbound group:** Use `type: 'groupchat'` for group chat rooms
-- **Media:** Implement XEP-0363 HTTP File Upload via `fileUploadUrl` config
-
-### JID Normalization
-- Strip resource from JIDs for `allowFrom` matching: `jid.split('/')[0]`
-- Store bare JIDs in config, handle full JIDs at runtime
-
-### Reconnection
-Implement auto-reconnect with exponential backoff on `offline` and `error` events.
-
-## Adapter Patterns
-
-### Onboarding Adapter (`onboarding.ts`)
-CLI wizard for channel setup:
-```typescript
-export const xmppOnboardingAdapter: ChannelOnboardingAdapter = {
-  channel: "xmpp",
-  getStatus: async ({ cfg }) => ({ channel: "xmpp", configured: Boolean(cfg.channels?.xmpp?.jid) }),
-  configure: async ({ cfg, prompter }) => {
-    const jid = await prompter.text({ message: "XMPP JID" });
-    // ... prompt for password, allowFrom, groups
-    return { cfg: mergedConfig, accountId };
-  },
-  dmPolicy: { label: "XMPP", channel: "xmpp", ... },
-};
-```
-
-### Actions Adapter (`actions.ts`)
-Message reactions via XEP-0444:
-```typescript
-export const xmppMessageActions = {
-  listActions: ({ cfg }) => cfg.channels?.xmpp?.actions?.reactions ? ["react"] : [],
-  supportsAction: ({ action }) => action === "react",
-  handleAction: async ({ action, params, cfg, accountId }) => {
-    // Send XEP-0444 reaction stanza
-  },
-};
-```
-
-### Directory Adapter (`directory.ts`)
-Contact and room listings:
-```typescript
-export const xmppDirectoryAdapter = {
-  self: async ({ cfg, accountId }) => ({ kind: "user", id: jid, name: "Bot" }),
-  listPeers: async (params) => allowFrom.map((jid) => ({ kind: "user", id: jid })),
-  listGroups: async (params) => groups.map((room) => ({ kind: "group", id: room })),
-};
-```
-
-### Heartbeat Adapter (`heartbeat.ts`)
-Status checks and notifications:
-```typescript
-export const xmppHeartbeatAdapter = {
-  checkReady: async ({ cfg, accountId }) => ({ ok: Boolean(activeClient), reason: "ok" }),
-  resolveRecipients: ({ cfg, opts }) => ({ recipients: allowFrom, source: "allowFrom" }),
-};
-```
-
-### Status Issues (`status-issues.ts`)
-Detect and report problems:
-```typescript
-export function collectXmppStatusIssues(accounts: ChannelAccountSnapshot[]): ChannelStatusIssue[] {
-  // Check configured, running, connected status
-  // Return issues with fix suggestions
-}
+```text
+index.ts                 Plugin entry point and public exports
+src/channel.ts           OpenClaw channel adapters
+src/monitor.ts           Connection and message-stanza lifecycle
+src/inbound.ts           Authorization, routing, and reply delivery
+src/outbound.ts          Text and presence sending
+src/muc-identity.ts      Verified MUC occupant identity cache
+src/rooms.ts             Explicit configured-room joins
+src/stanza-handlers.ts   Presence handling
+src/reconnect.ts         Reconnect policy
+src/keepalive.ts         XEP-0199 keepalive
+src/chat-state.ts        Chat states and read markers
+src/replies.ts           Reply and fallback helpers
+src/actions.ts           Optional reactions
+src/config-schema.ts     Runtime configuration schema
+src/accounts.ts          Account resolution
 ```
 
 ## Conventions
 
-- **Config access:** Always validate against `config-schema.ts` before use
-- **Logging:** Use OpenClaw's logging context, not raw `console.log`
-- **Error handling:** Wrap XMPP operations in try/catch; emit structured errors to OpenClaw
-- **Types:** Define interfaces for `XmppConfig`, `InboundMessage`, `OutboundMessage`
+- Use bare, lowercase JIDs for authorization comparisons.
+- Use OpenClaw's account-scoped pairing store for DM approvals.
+- Use the provided logger rather than raw console output in new code.
+- Keep protocol extensions isolated and dependency-light.
+- Use only generic examples such as `bot@example.com`, `user@example.com`, and
+  `room@conference.example.com`.
 
-## Commands
+## Verification
 
 ```bash
-npm install          # Install dependencies
-npm run build        # Compile TypeScript
-npm run dev          # Watch mode for development
-npm test             # Run tests
+npm ci --ignore-scripts
+npm run build
+npm test -- --run
+npm audit --omit=dev --omit=peer
+npm pack --dry-run
+git diff --check
 ```
 
-## Development Phases
-
-**Phase 1: Basic XMPP** — Connection, auth, reconnect, direct messages ✅  
-**Phase 2: Groups & Adapters** — Group chat, onboarding, pairing, security, actions, directory, heartbeat, status ✅  
-**Phase 3: Advanced** — XEP-0363 file upload, Prosody HTTP API, live directory queries
-
-## Dependencies
-
-```json
-{
-  "@xmpp/client": "^0.13.1",
-  "@xmpp/debug": "^0.13.1",
-  "zod": "^3.22.0"
-}
-```
-
-## Configuration Structure
-
-Channel config lives under `channels.xmpp.accounts.<accountId>`:
-```json
-{
-  "channels": {
-    "xmpp": {
-      "accounts": {
-        "default": {
-          "jid": "bot@example.com",
-          "password": "secret123",
-          "server": "example.com",
-          "port": 5222,
-          "allowFrom": ["user1@example.com"],
-          "groups": ["room@conference.example.com"],
-          "fileUploadUrl": "https://upload.example.com"
-        }
-      }
-    }
-  }
-}
-```
-
-## Testing Notes
-- Mock `@xmpp/client` for unit tests
-- Test stanza parsing with real XML samples from Prosody/ejabberd
-- Validate config schema with edge cases (missing optional fields, invalid JIDs)
+ESLint 9 needs a flat configuration before `npm run lint` can pass; keep that
+debt separate from unrelated feature changes.

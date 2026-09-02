@@ -1,6 +1,6 @@
 /**
  * XMPP Reconnection with Exponential Backoff
- * 
+ *
  * Handles automatic reconnection when connection is lost
  */
 
@@ -42,6 +42,8 @@ export function initReconnectState(accountId: string): void {
  * Clear reconnect state (on successful connection)
  */
 export function clearReconnectState(accountId: string): void {
+  const state = reconnectStates.get(accountId);
+  if (state?.timer) clearTimeout(state.timer);
   reconnectStates.delete(accountId);
 }
 
@@ -52,6 +54,10 @@ export function abortReconnect(accountId: string): void {
   const state = reconnectStates.get(accountId);
   if (state) {
     state.aborted = true;
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = undefined;
+    }
   }
 }
 
@@ -74,10 +80,16 @@ async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      Promise.resolve(stale.stop()).catch(() => undefined),
+      Promise.resolve(stale.stop()).catch((err) => {
+        log?.warn?.(
+          `[${accountId}] Stale client stop failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }),
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
-          log?.warn?.(`[${accountId}] Stale client stop exceeded ${STALE_STOP_TIMEOUT_MS}ms; abandoning it`);
+          log?.warn?.(
+            `[${accountId}] Stale client stop exceeded ${STALE_STOP_TIMEOUT_MS}ms; abandoning it`
+          );
           resolve();
         }, STALE_STOP_TIMEOUT_MS);
       }),
@@ -90,19 +102,22 @@ async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
 /**
  * Schedule a reconnection attempt with exponential backoff
  */
-export function scheduleReconnect(
-  accountId: string,
-  ctx: GatewayStartContext,
-  log?: Logger
-): void {
+export function scheduleReconnect(accountId: string, ctx: GatewayStartContext, log?: Logger): void {
   const state = reconnectStates.get(accountId);
   if (!state || state.aborted) {
     log?.debug?.(`[${accountId}] Reconnect aborted or not initialized`);
     return;
   }
-  
+
+  if (state.timer) {
+    log?.debug?.(`[${accountId}] Reconnect already scheduled`);
+    return;
+  }
+
   if (state.attempts >= RECONNECT_MAX_ATTEMPTS) {
-    log?.error?.(`[${accountId}] Max reconnect attempts (${RECONNECT_MAX_ATTEMPTS}) reached, giving up`);
+    log?.error?.(
+      `[${accountId}] Max reconnect attempts (${RECONNECT_MAX_ATTEMPTS}) reached, giving up`
+    );
     ctx.setStatus?.({
       accountId,
       running: false,
@@ -110,29 +125,32 @@ export function scheduleReconnect(
     });
     return;
   }
-  
+
   const delay = Math.min(state.nextDelayMs, RECONNECT_MAX_DELAY_MS);
   state.attempts++;
   state.nextDelayMs = Math.min(state.nextDelayMs * 2, RECONNECT_MAX_DELAY_MS);
   state.lastAttemptAt = Date.now();
-  
-  log?.info?.(`[${accountId}] Scheduling reconnect in ${delay}ms (attempt ${state.attempts}/${RECONNECT_MAX_ATTEMPTS})`);
-  
+
+  log?.info?.(
+    `[${accountId}] Scheduling reconnect in ${delay}ms (attempt ${state.attempts}/${RECONNECT_MAX_ATTEMPTS})`
+  );
+
   ctx.setStatus?.({
     accountId,
     reconnectAttempts: state.attempts,
     reconnectNextAt: Date.now() + delay,
   });
-  
-  setTimeout(async () => {
+
+  state.timer = setTimeout(async () => {
     const currentState = reconnectStates.get(accountId);
-    if (currentState?.aborted) {
+    if (currentState !== state || currentState.aborted) {
       log?.debug?.(`[${accountId}] Reconnect cancelled (aborted)`);
       return;
     }
-    
+    state.timer = undefined;
+
     log?.info?.(`[${accountId}] Attempting reconnect (attempt ${state.attempts})...`);
-    
+
     try {
       // Stop the old client before dropping the reference. Deleting the map
       // entry alone orphans the underlying @xmpp/client, which holds its TCP
@@ -148,7 +166,9 @@ export function scheduleReconnect(
         log?.error?.(`[${accountId}] startXmppConnection not registered for reconnect`);
       }
     } catch (err) {
-      log?.error?.(`[${accountId}] Reconnect failed: ${err instanceof Error ? err.message : String(err)}`);
+      log?.error?.(
+        `[${accountId}] Reconnect failed: ${err instanceof Error ? err.message : String(err)}`
+      );
       // Will trigger another reconnect via offline event
     }
   }, delay);

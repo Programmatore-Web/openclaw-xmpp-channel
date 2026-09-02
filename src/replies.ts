@@ -6,32 +6,21 @@
  * Gajim) render the response as a quote-thread referring back to the original;
  * older clients see the quoted text inline at the top of the body so they
  * still have context.
- *
- * For OMEMO chats only the {@link buildReplyElement} pointer is emitted as a
- * plaintext sibling of the `<encrypted>` payload — the body itself is the
- * canned "encrypted message" notice, so a body-range fallback marker doesn't
- * apply. For plaintext chats, all three pieces are used together: the pointer,
- * a `> quoted line\n>\n` prefix on the body, and the matching `<fallback>`
- * marker telling reply-aware clients to strip the prefix before rendering.
+ * The reply pointer, quoted body prefix, and matching fallback marker are
+ * emitted together so older clients retain readable context.
  */
 import { xml } from "@xmpp/client";
 import type { Element } from "@xmpp/client";
 
 /**
  * XEP-0461 reply pointer. MUST be a top-level child of the outgoing
- * `<message>` and — when paired with OMEMO — MUST be a plaintext sibling of
- * the `<encrypted>` element (not inside the SCE envelope), because the
- * receiving client uses it at parse time to look up the original message in
- * local history before any decryption happens.
+ * `<message>` so the receiving client can look up the original message.
  *
  * @param originalMsgId      `id` attribute of the message being replied to.
  * @param originalSenderJid  For 1:1 chats: bare JID of the original sender.
- *                            For MUCs: full occupant JID (`room@conf/nick`).
+ *                            For MUCs: full occupant JID (`room@conference.example.com/nick`).
  */
-export function buildReplyElement(
-  originalMsgId: string,
-  originalSenderJid: string,
-): Element {
+export function buildReplyElement(originalMsgId: string, originalSenderJid: string): Element {
   return xml("reply", {
     xmlns: "urn:xmpp:reply:0",
     id: originalMsgId,
@@ -59,16 +48,12 @@ export function buildReplyElement(
  */
 const MAX_QUOTE_CHARS = 280;
 
-export function buildReplyFallbackPrefix(
-  originalBody: string,
-): { prefix: string; length: number } {
+export function buildReplyFallbackPrefix(originalBody: string): { prefix: string; length: number } {
   const trimmed = originalBody.trim();
   if (!trimmed) return { prefix: "", length: 0 };
 
   const quoted =
-    trimmed.length > MAX_QUOTE_CHARS
-      ? trimmed.slice(0, MAX_QUOTE_CHARS).trimEnd() + "…"
-      : trimmed;
+    trimmed.length > MAX_QUOTE_CHARS ? trimmed.slice(0, MAX_QUOTE_CHARS).trimEnd() + "…" : trimmed;
 
   const quotedLines = quoted.split("\n").map((line) => `> ${line}`);
   // Trailing `>\n` separates the quote block from the reply body so the
@@ -86,6 +71,6 @@ export function buildReplyFallbackMarker(start: number, end: number): Element {
   return xml(
     "fallback",
     { xmlns: "urn:xmpp:fallback:0", for: "urn:xmpp:reply:0" },
-    xml("body", { start: String(start), end: String(end) }),
+    xml("body", { start: String(start), end: String(end) })
   );
 }
