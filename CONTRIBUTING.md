@@ -6,7 +6,7 @@ Thank you for your interest in contributing to the XMPP Channel Plugin for OpenC
 
 ### Prerequisites
 
-- Node.js 18.0.0 or higher
+- Node.js 22.11 or higher
 - npm 9.0.0 or higher
 - An XMPP server for testing (Prosody or ejabberd recommended)
 
