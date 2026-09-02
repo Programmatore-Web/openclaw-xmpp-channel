@@ -40,12 +40,12 @@
   "author": "OpenClaw Contributors",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.11"
   },
   "dependencies": {
     "@privacyresearch/libsignal-protocol-typescript": "^0.0.16",
-    "@xmpp/client": "^0.13.1",
-    "@xmpp/debug": "^0.13.1",
+    "@xmpp/client": "^0.14.0",
+    "@xmpp/debug": "^0.14.0",
     "mime-types": "^3.0.2"
   },
   "devDependencies": {
