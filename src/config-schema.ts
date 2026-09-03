@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { buildChannelConfigSchema } from "openclaw/plugin-sdk";
+import { buildChannelConfigSchema } from "openclaw/plugin-sdk/core";
+import { xmppConfigUiHints } from "./config-ui-hints.js";
 
 /**
  * XMPP action configuration schema
@@ -7,9 +8,20 @@ import { buildChannelConfigSchema } from "openclaw/plugin-sdk";
 export const XmppActionSchema = z.object({
   /** Enable XEP-0444 reactions */
   reactions: z.boolean().optional(),
-  /** Enable send message action */
-  sendMessage: z.boolean().optional(),
 });
+
+/**
+ * OpenClaw heartbeat visibility overrides. Missing values are resolved by
+ * OpenClaw from the channel/global defaults.
+ */
+export const XmppHeartbeatVisibilitySchema = z
+  .object({
+    showOk: z.boolean().optional(),
+    showAlerts: z.boolean().optional(),
+    useIndicator: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
 
 /**
  * Tool policy schema for group tool access control
@@ -36,24 +48,15 @@ export const XmppGroupConfigSchema = z.object({
 });
 
 /**
- * OMEMO encryption configuration schema
+ * Named XMPP account override schema. Missing fields inherit from the root
+ * account configuration, so this schema must not materialize root defaults.
  */
-export const XmppOmemoConfigSchema = z.object({
-  /** Enable OMEMO encryption support */
-  enabled: z.boolean().optional().default(false).describe("Enable OMEMO encryption (XEP-0384)"),
-  /** Device label for this bot instance */
-  deviceLabel: z.string().optional().describe("Display label for this device in OMEMO device list"),
-});
+export const XmppAccountOverrideSchema = z.object({
+  /** Whether this account is enabled */
+  enabled: z.boolean().optional().describe("Enable this XMPP account"),
 
-/**
- * XMPP account configuration schema
- */
-export const XmppAccountSchema = z.object({
   /** Account name (optional display name) */
   name: z.string().optional().describe("Display name for this account"),
-
-  /** Allow the agent to write to config (e.g., add users to allowlist) */
-  configWrites: z.boolean().optional().describe("Allow agent to modify config (default: true)"),
 
   /** Bot JID (e.g., bot@example.com) */
   jid: z.string().optional().describe("Bot JID (e.g., bot@example.com)"),
@@ -61,53 +64,93 @@ export const XmppAccountSchema = z.object({
   /** XMPP account password */
   password: z.string().optional().describe("XMPP account password"),
 
-  /** XMPP server hostname (defaults to JID domain) */
-  server: z.string().optional().describe("XMPP server hostname (defaults to JID domain)"),
+  /** Physical TCP connection host (defaults to the JID domain) */
+  server: z.string().optional().describe("TCP connection host (defaults to the JID domain)"),
 
   /** XMPP server port */
-  port: z.number().int().min(1).max(65535).optional().default(5222).describe("XMPP server port"),
+  port: z.number().int().min(1).max(65535).optional().describe("XMPP server port"),
 
   /** XMPP resource identifier (internal, auto-generated if not set) */
-  resource: z.string().optional().describe("XMPP resource identifier (auto-generated for uniqueness)"),
+  resource: z
+    .string()
+    .optional()
+    .describe("XMPP resource identifier (auto-generated for uniqueness)"),
 
-  /** Nickname shown in group chats (defaults to local part of JID, e.g., 'Aurora') */
-  nickname: z.string().optional().describe("Display name in group chats (defaults to local part of JID, e.g., 'Aurora')"),
+  /** Nickname shown in group chats (defaults to local part of JID) */
+  nickname: z
+    .string()
+    .optional()
+    .describe("Display name in group chats (defaults to the JID local part)"),
 
   /** Direct chat policy for guests (JIDs not in allowFrom) */
-  dmPolicy: z.enum(["disabled", "open", "pairing", "allowlist"]).optional().default("open").describe("Direct chat policy: disabled (owners only), open (allow all), pairing (require pairing), allowlist (only dmAllowlist JIDs)"),
+  dmPolicy: z
+    .enum(["disabled", "open", "pairing", "allowlist"])
+    .optional()
+    .describe(
+      "Direct chat policy: disabled (owners only), open (allow all), pairing (require approval), allowlist (only dmAllowlist JIDs)"
+    ),
 
   /** Group message policy */
-  groupPolicy: z.enum(["open", "allowlist"]).optional().default("open").describe("Group message policy: open (respond to all), allowlist (require mention or allowlist)"),
+  groupPolicy: z
+    .enum(["open", "allowlist"])
+    .optional()
+    .describe("Group message policy: open (respond to all) or allowlist (verified JIDs only)"),
 
   /** Bot owner / trusted JIDs — always have direct chat access */
-  allowFrom: z.array(z.string()).optional().describe("Bot owner JIDs (always have direct chat access, cannot be removed by guests)"),
+  allowFrom: z
+    .array(z.string())
+    .optional()
+    .describe("Bot owner JIDs (always have direct chat access, cannot be removed by guests)"),
 
   /** DM allowlist — additional JIDs allowed to direct-chat when dmPolicy is 'allowlist' */
-  dmAllowlist: z.array(z.string()).optional().describe("JIDs allowed to direct-chat when dmPolicy is 'allowlist' (owners always have access regardless)"),
+  dmAllowlist: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "JIDs allowed to direct-chat when dmPolicy is 'allowlist' (owners always have access regardless)"
+    ),
 
   /** Allowed sender JIDs for groups */
-  groupAllowFrom: z.array(z.string()).optional().describe("Allowed sender JIDs for groups (defaults to allowFrom, use * for all)"),
+  groupAllowFrom: z
+    .array(z.string())
+    .optional()
+    .describe("Allowed sender JIDs for groups (defaults to allowFrom, use * for all)"),
 
   /** Group chat rooms to join */
   groups: z.array(z.string()).optional().describe("Group chat rooms to join on startup"),
 
   /** Action configuration */
-  actions: XmppActionSchema.optional().describe("Action configuration (reactions, sendMessage)"),
-
-  /** Inbound message prefix */
-  messagePrefix: z.string().optional().describe("Prefix added to inbound messages"),
+  actions: XmppActionSchema.optional().describe("Optional XEP-0444 reaction support"),
 
   /** Heartbeat visibility */
-  heartbeatVisibility: z.enum(["visible", "hidden"]).optional().describe("Heartbeat visibility in status"),
+  heartbeatVisibility: XmppHeartbeatVisibilitySchema.describe(
+    "Heartbeat visibility overrides resolved by OpenClaw"
+  ),
 
   /** Per-group settings (keyed by room JID or "*" for default) */
-  groupSettings: z.record(z.string(), XmppGroupConfigSchema).optional().describe("Per-group settings for tool policies and mentions"),
+  groupSettings: z
+    .record(z.string(), XmppGroupConfigSchema)
+    .optional()
+    .describe("Per-group settings for tool policies and mentions"),
 
   /** Send read receipts for incoming messages (XEP-0333, default true) */
-  sendReadReceipts: z.boolean().optional().describe("Send read receipts (XEP-0333 chat markers) for incoming messages (default: true)"),
+  sendReadReceipts: z
+    .boolean()
+    .optional()
+    .describe("Send read receipts (XEP-0333 chat markers) for incoming messages"),
+});
 
-  /** OMEMO encryption configuration */
-  omemo: XmppOmemoConfigSchema.optional().describe("OMEMO encryption settings (XEP-0384)"),
+/**
+ * Root/default XMPP account schema with the runtime defaults materialized.
+ */
+export const XmppAccountSchema = XmppAccountOverrideSchema.extend({
+  enabled: XmppAccountOverrideSchema.shape.enabled.default(true),
+  port: XmppAccountOverrideSchema.shape.port.default(5222),
+  dmPolicy: XmppAccountOverrideSchema.shape.dmPolicy.default("pairing"),
+  groupPolicy: XmppAccountOverrideSchema.shape.groupPolicy.default("allowlist"),
+  sendReadReceipts: XmppAccountOverrideSchema.shape.sendReadReceipts
+    .default(true)
+    .describe("Send read receipts (XEP-0333 chat markers) for incoming messages (default: true)"),
 });
 
 /**
@@ -115,7 +158,7 @@ export const XmppAccountSchema = z.object({
  */
 export const XmppConfigSchema = XmppAccountSchema.extend({
   /** Multi-account configuration */
-  accounts: z.record(z.string(), XmppAccountSchema.partial()).optional(),
+  accounts: z.record(z.string(), XmppAccountOverrideSchema).optional(),
 });
 
 export type XmppConfigSchemaType = z.infer<typeof XmppConfigSchema>;
@@ -123,18 +166,25 @@ export type XmppConfigSchemaType = z.infer<typeof XmppConfigSchema>;
 /**
  * Build channel config schema using OpenClaw SDK helper
  */
-export function xmppChannelConfigSchema() {
-  return buildChannelConfigSchema(XmppConfigSchema);
+export function xmppChannelConfigSchema(): ReturnType<typeof buildChannelConfigSchema> {
+  return buildChannelConfigSchema(XmppConfigSchema, {
+    uiHints: xmppConfigUiHints,
+    jsonSchemaMode: "input",
+  });
 }
 
 /**
- * Extract server from JID if not explicitly provided
+ * Extract the logical XMPP domain from a JID.
  */
-export function resolveServer(config: { jid: string; server?: string }): string {
-  if (config.server) return config.server;
-  const domain = config.jid.split("@")[1];
-  if (!domain) throw new Error(`Invalid JID: ${config.jid}`);
+export function extractJidDomain(jid: string): string {
+  const domain = bareJid(jid).split("@")[1];
+  if (!domain) throw new Error(`Invalid JID: ${jid}`);
   return domain;
+}
+
+/** Resolve the physical host used by the TCP service endpoint. */
+export function resolveConnectHost(config: { jid: string; server?: string }): string {
+  return config.server?.trim() || extractJidDomain(config.jid);
 }
 
 /**

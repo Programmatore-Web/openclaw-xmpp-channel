@@ -1,4 +1,4 @@
-import type { OpenClawConfig, RuntimeEnv, WizardPrompter } from "openclaw/plugin-sdk";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 /**
  * Direct chat policy type
@@ -16,8 +16,18 @@ export type GroupPolicy = "open" | "allowlist";
 export interface XmppActionConfig {
   /** Enable XEP-0444 reactions */
   reactions?: boolean;
-  /** Enable send message action */
-  sendMessage?: boolean;
+}
+
+/**
+ * OpenClaw heartbeat visibility overrides.
+ */
+export interface XmppHeartbeatVisibilityConfig {
+  /** Show successful HEARTBEAT_OK acknowledgements */
+  showOk?: boolean;
+  /** Show heartbeat alerts that carry actual content */
+  showAlerts?: boolean;
+  /** Emit heartbeat status indicator events */
+  useIndicator?: boolean;
 }
 
 /**
@@ -45,16 +55,6 @@ export interface XmppGroupConfig {
 }
 
 /**
- * OMEMO encryption configuration
- */
-export interface XmppOmemoConfig {
-  /** Enable OMEMO encryption support */
-  enabled?: boolean;
-  /** Device label for this bot instance */
-  deviceLabel?: string;
-}
-
-/**
  * XMPP channel configuration
  */
 export interface XmppConfig {
@@ -62,7 +62,7 @@ export interface XmppConfig {
   jid: string;
   /** XMPP account password */
   password: string;
-  /** XMPP server hostname (defaults to JID domain) */
+  /** Physical TCP connection host (defaults to the JID domain) */
   server?: string;
   /** XMPP server port (default: 5222) */
   port?: number;
@@ -74,8 +74,6 @@ export interface XmppConfig {
   name?: string;
   /** Whether this account is enabled */
   enabled?: boolean;
-  /** Allow agent to modify config (default: true) */
-  configWrites?: boolean;
   /** Direct message policy */
   dmPolicy?: DmPolicy;
   /** Group message policy */
@@ -90,16 +88,12 @@ export interface XmppConfig {
   groups?: string[];
   /** Action configuration (reactions, etc.) */
   actions?: XmppActionConfig;
-  /** Inbound message prefix */
-  messagePrefix?: string;
   /** Heartbeat visibility */
-  heartbeatVisibility?: "visible" | "hidden";
+  heartbeatVisibility?: XmppHeartbeatVisibilityConfig;
   /** Per-group settings (keyed by room JID or "*" for default) */
   groupSettings?: Record<string, XmppGroupConfig>;
   /** Send read receipts for incoming messages (XEP-0333, default true) */
   sendReadReceipts?: boolean;
-  /** OMEMO encryption configuration */
-  omemo?: XmppOmemoConfig;
   /** Multi-account configuration */
   accounts?: Record<string, XmppConfig>;
 }
@@ -150,10 +144,6 @@ export interface XmppInboundMessage {
    *  this is what a 1:1 reaction must target (Conversations indexes its own sent
    *  messages by origin-id, NOT by the recipient-server stanza-id). */
   originId?: string;
-  /** True if the incoming message was OMEMO encrypted */
-  wasEncrypted?: boolean;
-  /** Sender JID for OMEMO encryption (bare JID, needed for MUC) */
-  senderJidForOmemo?: string;
   /** XEP-0066 Out-of-Band Data: attachment URL the peer included (file upload, image) */
   oobUrl?: string;
   /** XEP-0066 Out-of-Band Data: optional human-readable description of the attachment */
@@ -170,7 +160,7 @@ export interface ChannelAccountStatusPatch {
   lastStartAt?: number | null;
   lastStopAt?: number | null;
   lastConnectedAt?: number | null;
-  lastDisconnect?: number | null;
+  lastDisconnect?: string | { at: number; error?: string } | null;
   lastError?: string | null;
   lastInboundAt?: number | null;
   [key: string]: unknown;
@@ -188,13 +178,6 @@ export interface GatewayStartContext {
   runtime?: unknown;
   setStatus?: (patch: ChannelAccountStatusPatch) => void;
   getStatus?: () => ChannelAccountStatusPatch;
-}
-
-/**
- * Gateway stop result
- */
-export interface GatewayStopResult {
-  stop: () => void;
 }
 
 /**
@@ -217,16 +200,8 @@ export interface SendResult {
   data?: unknown;
 }
 
-/**
- * Channel message action names supported by this plugin. Names align with
- * the SDK's canonical CHANNEL_MESSAGE_ACTION_NAMES vocabulary so OpenClaw's
- * tool builder accepts them (`edit` and `unsend` are the SDK's standard
- * names for XEP-0308 LMC and XEP-0424 Retraction respectively, used by
- * iMessage and other plugins). We keep a narrow local union rather than
- * re-exporting the SDK type because the SDK's d.ts re-export uses a
- * suffixed internal name that doesn't surface through the package boundary.
- */
-export type ChannelMessageActionName = "react" | "poll" | "send" | "edit" | "unsend";
+/** Channel message actions supported by this baseline. */
+export type ChannelMessageActionName = "react";
 
 /**
  * Channel directory entry
@@ -253,14 +228,14 @@ export interface ChannelResolveResult {
  * Channel account snapshot for status
  */
 export interface ChannelAccountSnapshot {
-  accountId?: string;
+  accountId: string;
   name?: string;
   enabled?: boolean;
   configured?: boolean;
   connected?: boolean;
   running?: boolean;
   lastConnectedAt?: number | null;
-  lastDisconnect?: number | null;
+  lastDisconnect?: string | { at: number; error?: string } | null;
   lastMessageAt?: number | null;
   lastEventAt?: number | null;
   lastInboundAt?: number | null;
@@ -280,56 +255,6 @@ export interface ChannelStatusIssue {
   kind: "auth" | "runtime" | "config";
   message: string;
   fix?: string;
-}
-
-/**
- * Channel onboarding status
- */
-export interface ChannelOnboardingStatus {
-  channel: string;
-  configured: boolean;
-  statusLines: string[];
-  selectionHint?: string;
-  quickstartScore?: number;
-}
-
-/**
- * Channel onboarding result
- */
-export interface ChannelOnboardingResult {
-  cfg: OpenClawConfig;
-  accountId?: string;
-}
-
-/**
- * Channel onboarding context
- */
-export interface ChannelOnboardingContext {
-  cfg: OpenClawConfig;
-  runtime: RuntimeEnv;
-  prompter: WizardPrompter;
-  options?: Record<string, unknown>;
-  accountOverrides?: Record<string, string>;
-  shouldPromptAccountIds?: boolean;
-  forceAllowFrom?: boolean;
-}
-
-/**
- * Channel onboarding adapter
- */
-export interface ChannelOnboardingAdapter {
-  channel: string;
-  getStatus: (ctx: { cfg: OpenClawConfig; accountOverrides?: Record<string, string> }) => Promise<ChannelOnboardingStatus>;
-  configure: (ctx: ChannelOnboardingContext) => Promise<ChannelOnboardingResult>;
-  dmPolicy?: {
-    label: string;
-    channel: string;
-    policyKey: string;
-    allowFromKey: string;
-    getCurrent: (cfg: OpenClawConfig) => string;
-    setPolicy: (cfg: OpenClawConfig, policy: string) => OpenClawConfig;
-    promptAllowFrom?: (params: { cfg: OpenClawConfig; prompter: WizardPrompter }) => Promise<OpenClawConfig>;
-  };
 }
 
 /**

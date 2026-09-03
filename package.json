@@ -1,7 +1,7 @@
 {
   "name": "@openclaw/xmpp",
   "version": "4.1.1",
-  "description": "XMPP channel plugin for OpenClaw (Prosody, ejabberd, and other XMPP servers)",
+  "description": "Minimal text-only XMPP channel plugin for OpenClaw",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,26 +31,23 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/elmafioso79/xmpp-channel.git"
+    "url": "git+https://github.com/Programmatore-Web/openclaw-xmpp-channel.git"
   },
   "bugs": {
-    "url": "https://github.com/elmafioso79/xmpp-channel/issues"
+    "url": "https://github.com/Programmatore-Web/openclaw-xmpp-channel/issues"
   },
-  "homepage": "https://github.com/elmafioso79/xmpp-channel#readme",
+  "homepage": "https://github.com/Programmatore-Web/openclaw-xmpp-channel#readme",
   "author": "OpenClaw Contributors",
   "license": "MIT",
   "engines": {
-    "node": ">=22.11"
+    "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
   },
   "dependencies": {
-    "@privacyresearch/libsignal-protocol-typescript": "^0.0.16",
     "@xmpp/client": "^0.14.0",
-    "@xmpp/debug": "^0.14.0",
-    "mime-types": "^3.0.2"
+    "zod": "4.3.6"
   },
   "devDependencies": {
-    "@types/mime-types": "^3.0.1",
-    "@types/node": "^20.10.0",
+    "@types/node": "^22.15.0",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
     "eslint": "^9.39.2",
@@ -60,7 +57,7 @@
     "vitest": "^1.0.0"
   },
   "peerDependencies": {
-    "openclaw": "^2026.2.2-3"
+    "openclaw": "^2026.8.2"
   },
   "overrides": {
     "zod": "4.3.6"
@@ -69,6 +66,12 @@
     "extensions": [
       "./dist/index.js"
     ],
+    "compat": {
+      "pluginApi": ">=2026.8.2"
+    },
+    "build": {
+      "openclawVersion": "2026.8.2"
+    },
     "channel": {
       "id": "xmpp",
       "label": "XMPP",

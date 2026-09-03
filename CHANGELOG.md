@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Reduced the current plugin baseline to minimal text-only XMPP functionality.
+- Updated xmpp.js to the version already selected on the main branch.
+- Changed direct-message and group defaults to fail closed.
+
+### Removed
+
+- Application-layer end-to-end encryption and its cryptographic dependency.
+- Media/file upload, local-file access, and remote media fetching.
+- Generic Personal Eventing Protocol routing.
+- Automatic acceptance of presence subscriptions and MUC invitations.
+
 ## [4.1.0] - 2026-02-17
 
 ### Changed

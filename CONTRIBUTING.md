@@ -1,184 +1,77 @@
-# Contributing to XMPP Channel Plugin
+# Contributing
 
-Thank you for your interest in contributing to the XMPP Channel Plugin for OpenClaw! This document provides guidelines and instructions for contributing.
+Contributions should preserve the channel's minimal, text-only and fail-closed
+baseline.
 
-## Development Setup
+## Setup
 
-### Prerequisites
-
-- Node.js 22.11 or higher
-- npm 9.0.0 or higher
-- An XMPP server for testing (Prosody or ejabberd recommended)
-
-### Getting Started
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/elmafioso79/xmpp-channel.git
-   cd xmpp-channel
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-3. **Build the project:**
-   ```bash
-   npm run build
-   ```
-
-4. **Run in development mode:**
-   ```bash
-   npm run dev
-   ```
-
-## Project Structure
-
-```
-xmpp-channel/
-├── src/
-│   ├── index.ts           # Plugin entry point
-│   ├── channel.ts         # Main channel plugin with adapters
-│   ├── accounts.ts        # Account resolution utilities
-│   ├── config-schema.ts   # Zod schema for config validation
-│   ├── monitor.ts         # XMPP connection lifecycle
-│   ├── outbound.ts        # Send messages to XMPP
-│   ├── inbound.ts         # Inbound message routing
-│   ├── onboarding.ts      # CLI setup wizard
-│   ├── actions.ts         # Message actions (reactions)
-│   ├── directory.ts       # Contact/room directory
-│   ├── heartbeat.ts       # Heartbeat adapter
-│   ├── state.ts           # Global state maps and constants
-│   ├── rooms.ts           # Group room management
-│   ├── keepalive.ts       # XEP-0199 ping keepalive
-│   ├── reconnect.ts       # Exponential backoff reconnection
-│   ├── chat-state.ts      # XEP-0085 typing, XEP-0333 receipts
-│   ├── stanza-handlers.ts # Presence and invite handlers
-│   ├── iq-handlers.ts     # XEP-0092 version, XEP-0202 time
-│   ├── pep.ts             # XEP-0163 Personal Eventing
-│   ├── http-upload.ts     # XEP-0363 HTTP File Upload
-│   ├── xml-utils.ts       # Shared XML/stanza utilities
-│   ├── normalize.ts       # JID normalization
-│   ├── status-issues.ts   # Status issue detection
-│   ├── types.ts           # TypeScript interfaces
-│   ├── runtime.ts         # Runtime getter/setter
-│   ├── declarations.d.ts  # Type declarations for SDK
-│   └── omemo/             # OMEMO encryption (XEP-0384)
-│       ├── index.ts       # Encrypt/decrypt entry points
-│       ├── bundle.ts      # Key bundle management
-│       ├── device.ts      # Device list management
-│       ├── device-cache.ts# Device list caching
-│       ├── muc-occupants.ts # MUC occupant tracking
-│       ├── store.ts       # Signal protocol store
-│       └── types.ts       # OMEMO type definitions
-├── index.ts               # Re-exports from src/
-├── openclaw.plugin.json   # OpenClaw plugin manifest
-├── package.json
-└── tsconfig.json
-```
-
-## Development Workflow
-
-### Code Style
-
-This project uses ESLint and Prettier for code formatting:
+Requirements: OpenClaw 2026.8.2 or newer within the 2026 release line, npm 9
+or newer, an XMPP test account, and a Node.js version supported by OpenClaw
+2026.8.2: 22.22.3–22.x, 24.15.0–24.x, or 25.9.0 and newer.
 
 ```bash
-# Check linting
-npm run lint
-
-# Auto-fix linting issues
-npm run lint:fix
-
-# Format code
-npm run format
-
-# Check formatting
-npm run format:check
-```
-
-### Testing
-
-```bash
-# Run tests
-npm test
-```
-
-### Building
-
-```bash
-# Build the project
+git clone https://github.com/Programmatore-Web/openclaw-xmpp-channel.git
+cd openclaw-xmpp-channel
+npm ci --ignore-scripts
 npm run build
-
-# Clean and rebuild
-npm run clean && npm run build
+npm test -- --run
 ```
 
-## Submitting Changes
+Use only fictitious generic JIDs such as `bot@example.com`,
+`user@example.com`, and `room@conference.example.com` in source, logs,
+documentation, fixtures, and review notes.
 
-### Pull Request Process
+## Baseline constraints
 
-1. **Create a feature branch:**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
+- Keep DM and group defaults fail-closed.
+- Authorize inbound senders before routing, session recording, model dispatch,
+  commands, or tools.
+- Treat a missing real MUC sender JID as unauthorized under group allowlist
+  policy.
+- Join only rooms explicitly listed in `groups`.
+- Do not approve presence subscriptions or accept room invitations implicitly.
+- Do not add local-file access, remote-content fetching, or file transfer to a
+  general text-message change.
+- Keep optional protocol work isolated and dependency-light.
 
-2. **Make your changes** and ensure:
-   - All tests pass (`npm test`)
-   - No linting errors (`npm run lint`)
-   - Code is formatted (`npm run format`)
-   - Build succeeds (`npm run build`)
+## Source layout
 
-3. **Commit your changes:**
-   ```bash
-   git commit -m "feat: add your feature description"
-   ```
+```text
+index.ts                 Plugin entry point and public exports
+src/channel.ts           OpenClaw channel adapters
+src/monitor.ts           XMPP connection and stanza lifecycle
+src/inbound.ts           Authorization, routing, and reply delivery
+src/outbound.ts          Text and presence sending
+src/muc-identity.ts      Verified MUC occupant JID cache
+src/rooms.ts             Explicit room join handling
+src/stanza-handlers.ts   Presence and MUC self-presence handling
+src/reconnect.ts         Bounded exponential-backoff reconnect
+src/keepalive.ts         XEP-0199 keepalive
+src/chat-state.ts        XEP-0085 and XEP-0333 helpers
+src/replies.ts           XEP-0461 and XEP-0428 helpers
+src/actions.ts           Optional XEP-0444 reactions
+src/config-schema.ts     Runtime channel schema
+src/accounts.ts          Single- and multi-account resolution
+```
 
-4. **Push to your fork and create a Pull Request**
+## Before submitting
 
-### Commit Messages
+```bash
+npm ci --ignore-scripts
+npm run build
+npm test -- --run
+npm audit --omit=dev --omit=peer
+npm pack --dry-run
+git diff --check
+```
 
-We follow [Conventional Commits](https://www.conventionalcommits.org/):
+The test suite must pass. Run `npm run lint` as an informational check and
+report legacy lint configuration failures separately rather than broadening an
+otherwise focused change.
 
-- `feat:` - New features
-- `fix:` - Bug fixes
-- `docs:` - Documentation changes
-- `style:` - Code style changes (formatting, etc.)
-- `refactor:` - Code refactoring
-- `test:` - Adding or updating tests
-- `chore:` - Maintenance tasks
-
-## XEP Implementation Guidelines
-
-When implementing new XMPP Extension Protocols (XEPs):
-
-1. **Create a dedicated file** for the XEP (e.g., `src/xep-0XXX.ts`)
-2. **Follow the @xmpp/client patterns** for stanza handling
-3. **Add proper TypeScript types** for all data structures
-4. **Document the XEP number and title** in code comments
-5. **Update the README** with the new capability
-6. **Update CHANGELOG.md** with the addition
-
-## Testing with XMPP Servers
-
-### Prosody
-
-1. Install Prosody: https://prosody.im/
-2. Enable required modules in prosody.cfg.lua:
-   - `mod_http_upload` for file uploads
-   - `mod_pep` for personal eventing
-   - `mod_muc` for group chat rooms
-
-### ejabberd
-
-1. Install ejabberd: https://www.ejabberd.im/
-2. Enable required modules in ejabberd.yml
-
-## Questions?
-
-Feel free to open an issue for questions or discussions about contributing.
+Do not include credentials, private infrastructure details, generated package
+archives, `dist/`, or `node_modules/` in a change.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+Contributions are licensed under the MIT License.
