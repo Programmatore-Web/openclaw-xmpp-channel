@@ -22,6 +22,7 @@ const unsafeDomainDelimiters = new Set([
   "|",
 ]);
 const asciiDomainLabelPattern = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
+const numericIpLikeDomainPattern = /^(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+))*$/i;
 
 function isSafeDomainInput(domain: string): boolean {
   for (const character of domain) {
@@ -123,6 +124,10 @@ export function normalizeXmppRoomJid(roomJid: string): string | undefined {
 
   const hostname = unicodeDomain.endsWith(".") ? unicodeDomain.slice(0, -1) : unicodeDomain;
   if (!isSafeDomainInput(hostname)) return undefined;
+
+  if (isIP(hostname) === 4) return `${localpart}@${hostname}`;
+  // Prevent WHATWG from reinterpreting legacy numeric IPv4 forms as a different address.
+  if (numericIpLikeDomainPattern.test(hostname)) return undefined;
 
   const asciiDomain = domainToASCII(hostname);
   if (!asciiDomain || !isAcceptableAsciiDomain(asciiDomain)) return undefined;

@@ -118,6 +118,28 @@ describe('MUC room key normalization', () => {
   });
 
   it.each([
+    'room@127.1',
+    'room@2130706433',
+    'room@0177.0.0.1',
+    'room@0x7f.0.0.1',
+  ])('rejects a legacy numeric IPv4 form before WHATWG conversion: %s', (roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBeUndefined();
+  });
+
+  it('does not collapse a legacy IPv4 form onto a standard IPv4 state key', () => {
+    expect(normalizeXmppRoomJid('room@127.1')).toBeUndefined();
+    expect(normalizeXmppRoomJid('room@127.0.0.1')).toBe('room@127.0.0.1');
+  });
+
+  it.each([
+    'room@room123.example.com',
+    'room@123room.example.com',
+    'room@node-127.example.com',
+  ])('keeps a normal hostname containing digits valid: %s', (roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBe(roomJid);
+  });
+
+  it.each([
     ['missing closing bracket', 'room@[::1'],
     ['missing opening bracket', 'room@::1]'],
     ['non-IP contents', 'room@[not-an-ip]'],
