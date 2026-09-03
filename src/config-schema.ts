@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { buildChannelConfigSchema } from "openclaw/plugin-sdk/core";
+import { xmppConfigUiHints } from "./config-ui-hints.js";
 
 /**
  * XMPP action configuration schema
@@ -8,6 +9,19 @@ export const XmppActionSchema = z.object({
   /** Enable XEP-0444 reactions */
   reactions: z.boolean().optional(),
 });
+
+/**
+ * OpenClaw heartbeat visibility overrides. Missing values are resolved by
+ * OpenClaw from the channel/global defaults.
+ */
+export const XmppHeartbeatVisibilitySchema = z
+  .object({
+    showOk: z.boolean().optional(),
+    showAlerts: z.boolean().optional(),
+    useIndicator: z.boolean().optional(),
+  })
+  .strict()
+  .optional();
 
 /**
  * Tool policy schema for group tool access control
@@ -34,9 +48,13 @@ export const XmppGroupConfigSchema = z.object({
 });
 
 /**
- * XMPP account configuration schema
+ * Named XMPP account override schema. Missing fields inherit from the root
+ * account configuration, so this schema must not materialize root defaults.
  */
-export const XmppAccountSchema = z.object({
+export const XmppAccountOverrideSchema = z.object({
+  /** Whether this account is enabled */
+  enabled: z.boolean().optional().describe("Enable this XMPP account"),
+
   /** Account name (optional display name) */
   name: z.string().optional().describe("Display name for this account"),
 
@@ -50,7 +68,7 @@ export const XmppAccountSchema = z.object({
   server: z.string().optional().describe("TCP connection host (defaults to the JID domain)"),
 
   /** XMPP server port */
-  port: z.number().int().min(1).max(65535).optional().default(5222).describe("XMPP server port"),
+  port: z.number().int().min(1).max(65535).optional().describe("XMPP server port"),
 
   /** XMPP resource identifier (internal, auto-generated if not set) */
   resource: z
@@ -68,7 +86,6 @@ export const XmppAccountSchema = z.object({
   dmPolicy: z
     .enum(["disabled", "open", "pairing", "allowlist"])
     .optional()
-    .default("pairing")
     .describe(
       "Direct chat policy: disabled (owners only), open (allow all), pairing (require approval), allowlist (only dmAllowlist JIDs)"
     ),
@@ -77,7 +94,6 @@ export const XmppAccountSchema = z.object({
   groupPolicy: z
     .enum(["open", "allowlist"])
     .optional()
-    .default("allowlist")
     .describe("Group message policy: open (respond to all) or allowlist (verified JIDs only)"),
 
   /** Bot owner / trusted JIDs — always have direct chat access */
@@ -107,10 +123,9 @@ export const XmppAccountSchema = z.object({
   actions: XmppActionSchema.optional().describe("Optional XEP-0444 reaction support"),
 
   /** Heartbeat visibility */
-  heartbeatVisibility: z
-    .enum(["visible", "hidden"])
-    .optional()
-    .describe("Heartbeat visibility in status"),
+  heartbeatVisibility: XmppHeartbeatVisibilitySchema.describe(
+    "Heartbeat visibility overrides resolved by OpenClaw"
+  ),
 
   /** Per-group settings (keyed by room JID or "*" for default) */
   groupSettings: z
@@ -122,6 +137,19 @@ export const XmppAccountSchema = z.object({
   sendReadReceipts: z
     .boolean()
     .optional()
+    .describe("Send read receipts (XEP-0333 chat markers) for incoming messages"),
+});
+
+/**
+ * Root/default XMPP account schema with the runtime defaults materialized.
+ */
+export const XmppAccountSchema = XmppAccountOverrideSchema.extend({
+  enabled: XmppAccountOverrideSchema.shape.enabled.default(true),
+  port: XmppAccountOverrideSchema.shape.port.default(5222),
+  dmPolicy: XmppAccountOverrideSchema.shape.dmPolicy.default("pairing"),
+  groupPolicy: XmppAccountOverrideSchema.shape.groupPolicy.default("allowlist"),
+  sendReadReceipts: XmppAccountOverrideSchema.shape.sendReadReceipts
+    .default(true)
     .describe("Send read receipts (XEP-0333 chat markers) for incoming messages (default: true)"),
 });
 
@@ -130,7 +158,7 @@ export const XmppAccountSchema = z.object({
  */
 export const XmppConfigSchema = XmppAccountSchema.extend({
   /** Multi-account configuration */
-  accounts: z.record(z.string(), XmppAccountSchema.partial()).optional(),
+  accounts: z.record(z.string(), XmppAccountOverrideSchema).optional(),
 });
 
 export type XmppConfigSchemaType = z.infer<typeof XmppConfigSchema>;
@@ -139,7 +167,10 @@ export type XmppConfigSchemaType = z.infer<typeof XmppConfigSchema>;
  * Build channel config schema using OpenClaw SDK helper
  */
 export function xmppChannelConfigSchema(): ReturnType<typeof buildChannelConfigSchema> {
-  return buildChannelConfigSchema(XmppConfigSchema);
+  return buildChannelConfigSchema(XmppConfigSchema, {
+    uiHints: xmppConfigUiHints,
+    jsonSchemaMode: "input",
+  });
 }
 
 /**

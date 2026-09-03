@@ -60,6 +60,8 @@ and the Node.js ranges supported by OpenClaw 2026.8.2: 22.22.3–22.x,
 
 | Field | Default | Meaning |
 | --- | --- | --- |
+| `enabled` | `true` | Enable or disable the account |
+| `name` | none | Optional account display name |
 | `jid` | required | Bot JID, for example `bot@example.com` |
 | `password` | required | XMPP account password |
 | `server` | JID domain | Physical TCP connection host; it does not replace the logical XMPP domain extracted from `jid` |
@@ -75,6 +77,20 @@ and the Node.js ranges supported by OpenClaw 2026.8.2: 22.22.3–22.x,
 | `groupSettings` | none | Per-room mention and tool policies |
 | `actions.reactions` | `false` | Enable XEP-0444 reactions |
 | `sendReadReceipts` | `true` | Send XEP-0333 displayed markers for authorized DMs |
+
+### Control UI
+
+The plugin publishes `channelConfigs.xmpp` schema and UI hints for OpenClaw
+2026.8.2's native **Settings → Channels** surface. Normal single-account and
+named-account fields are represented by the schema-driven form, including
+sensitive password fields and the optional physical `server` connect host. No
+custom UI is required.
+
+Fields present under a named `accounts` entry override the corresponding root
+setting; omitted fields inherit it. The 2026.8.2 UI can normally edit these
+values. Raw JSON or the CLI may still be needed for inheritance edge cases,
+such as removing an enum override or distinguishing and restoring an omitted
+array versus an explicitly empty array.
 
 ### Direct-message policy
 

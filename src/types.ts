@@ -19,6 +19,18 @@ export interface XmppActionConfig {
 }
 
 /**
+ * OpenClaw heartbeat visibility overrides.
+ */
+export interface XmppHeartbeatVisibilityConfig {
+  /** Show successful HEARTBEAT_OK acknowledgements */
+  showOk?: boolean;
+  /** Show heartbeat alerts that carry actual content */
+  showAlerts?: boolean;
+  /** Emit heartbeat status indicator events */
+  useIndicator?: boolean;
+}
+
+/**
  * Tool policy for group tool access control
  */
 export interface XmppToolPolicy {
@@ -77,7 +89,7 @@ export interface XmppConfig {
   /** Action configuration (reactions, etc.) */
   actions?: XmppActionConfig;
   /** Heartbeat visibility */
-  heartbeatVisibility?: "visible" | "hidden";
+  heartbeatVisibility?: XmppHeartbeatVisibilityConfig;
   /** Per-group settings (keyed by room JID or "*" for default) */
   groupSettings?: Record<string, XmppGroupConfig>;
   /** Send read receipts for incoming messages (XEP-0333, default true) */

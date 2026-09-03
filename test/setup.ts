@@ -4,10 +4,19 @@ import { vi } from 'vitest';
 // production build still resolves and checks the official 2026.8.2 SDK types.
 vi.mock('openclaw/plugin-sdk/core', () => ({
   DEFAULT_ACCOUNT_ID: 'default',
-  buildChannelConfigSchema: (schema: unknown) => ({ schema }),
+  buildChannelConfigSchema: (schema: unknown, options?: { uiHints?: Record<string, unknown> }) => ({
+    schema,
+    uiHints: options?.uiHints,
+  }),
   emptyPluginConfigSchema: () => ({}),
   formatPairingApproveHint: (channel: string) => `openclaw pairing approve ${channel} <code>`,
   normalizeAccountId: (id: string | null | undefined) => id?.trim() || 'default',
+}));
+
+vi.mock('openclaw/plugin-sdk/channel-core', () => ({
+  createChannelConfigUiHints: ({ channelLabel }: { channelLabel: string }) => ({
+    dmPolicy: { label: `${channelLabel} DM Policy` },
+  }),
 }));
 
 vi.mock('openclaw/plugin-sdk/setup', () => ({
