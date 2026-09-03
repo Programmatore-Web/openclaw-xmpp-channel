@@ -11,6 +11,7 @@ import { bareJid } from "./config-schema.js";
 import type { Logger } from "./types.js";
 import { goneRooms, pendingMucJoins } from "./state.js";
 import { trackMucOccupantIdentity } from "./muc-identity.js";
+import { normalizeXmppRoomJid } from "./normalize.js";
 
 /**
  * Setup presence stanza handlers on the XMPP client
@@ -43,7 +44,7 @@ export function setupPresenceHandlers(
         const isSelfPresence = statuses.some((s) => s.attrs.code === "110");
 
         if (isSelfPresence) {
-          const pendingKey = `${accountId}:${fromBare}`;
+          const pendingKey = `${accountId}:${normalizeXmppRoomJid(fromBare)}`;
           const pending = pendingMucJoins.get(pendingKey);
           if (pending) {
             log?.debug?.(`[${accountId}] MUC self-presence received for ${fromBare}`);
@@ -110,7 +111,7 @@ function handlePresenceError(stanza: Element, accountId: string, from: string, l
     );
   } else if (errorCondition === "gone") {
     // Room no longer exists
-    goneRooms.add(roomJid);
+    goneRooms.add(normalizeXmppRoomJid(roomJid));
     log?.warn?.(`[${accountId}] Configured room ${roomJid} no longer exists`);
   } else if (errorCondition === "recipient-unavailable") {
     // Harmless - server couldn't deliver presence (user offline, no subscription, transient state)

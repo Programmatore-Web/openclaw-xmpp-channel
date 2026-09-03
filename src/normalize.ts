@@ -51,6 +51,11 @@ export function normalizeXmppMessagingTarget(target: string): string | undefined
   return normalizeXmppTarget(target) || undefined;
 }
 
+/** Normalize a MUC room identity for state-map and set keys. */
+export function normalizeXmppRoomJid(roomJid: string): string {
+  return bareJid(roomJid).toLowerCase();
+}
+
 /**
  * Format JID for display
  */

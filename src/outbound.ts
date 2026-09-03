@@ -1,7 +1,13 @@
 import { xml } from "@xmpp/client";
+import { randomUUID } from "node:crypto";
 import type { XmppConfig, SendResult, Logger } from "./types.js";
 import { getActiveClient } from "./monitor.js";
 import { bareJid } from "./config-schema.js";
+
+/** Generate a collision-resistant client-side XMPP stanza ID. */
+export function generateXmppMessageId(): string {
+  return `msg_${randomUUID()}`;
+}
 
 /** Send a plaintext one-to-one or configured-room text message. */
 export async function sendXmppMessage(
@@ -19,7 +25,7 @@ export async function sendXmppMessage(
   const normalizedTarget = target.toLowerCase();
   const isMuc =
     config.groups?.some((room) => bareJid(room).toLowerCase() === normalizedTarget) ?? false;
-  const messageId = `msg_${Date.now()}`;
+  const messageId = generateXmppMessageId();
   const message = xml(
     "message",
     { to: target, type: isMuc ? "groupchat" : "chat", id: messageId },
