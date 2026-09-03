@@ -10,8 +10,8 @@ const accountId = 'test-account';
 const room = 'room@conference.example.com';
 const nick = 'visitor';
 
-function presence(realJid?: string, type?: string) {
-  const attrs: Record<string, string> = { from: `${room}/${nick}` };
+function presence(realJid?: string, type?: string, roomJid = room) {
+  const attrs: Record<string, string> = { from: `${roomJid}/${nick}` };
   if (type) attrs.type = type;
   const children = realJid ? [xml('item', { jid: realJid })] : [];
   return xml(
@@ -45,5 +45,15 @@ describe('MUC occupant identity tracking', () => {
     trackMucOccupantIdentity(presence('user@example.com'), accountId);
     clearMucOccupantIdentities(accountId);
     expect(getMucOccupantRealJid(accountId, room, nick)).toBeUndefined();
+  });
+
+  it('uses canonical Unicode room keys for occupant identity lookups', () => {
+    trackMucOccupantIdentity(
+      presence('user@example.com', undefined, 'Cafe\u0301@Conference.Example.com'),
+      accountId
+    );
+    expect(getMucOccupantRealJid(accountId, 'café@conference.example.com', nick)).toBe(
+      'user@example.com'
+    );
   });
 });

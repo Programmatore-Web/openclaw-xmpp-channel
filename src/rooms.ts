@@ -32,6 +32,10 @@ export async function joinMuc(
   forceRejoin = true
 ): Promise<void> {
   const normalizedRoomJid = normalizeXmppRoomJid(roomJid);
+  if (!normalizedRoomJid) {
+    log?.warn?.(`[XMPP] Skipping invalid MUC room JID: ${roomJid}`);
+    return;
+  }
 
   // Skip rooms that have returned "gone" error
   if (goneRooms.has(normalizedRoomJid)) {

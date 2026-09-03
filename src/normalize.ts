@@ -2,6 +2,7 @@
  * XMPP target normalization utilities
  */
 
+import { domainToASCII } from "node:url";
 import { bareJid } from "./config-schema.js";
 
 /**
@@ -51,9 +52,27 @@ export function normalizeXmppMessagingTarget(target: string): string | undefined
   return normalizeXmppTarget(target) || undefined;
 }
 
-/** Normalize a MUC room identity for state-map and set keys. */
-export function normalizeXmppRoomJid(roomJid: string): string {
-  return bareJid(roomJid).toLowerCase();
+/**
+ * Canonicalize a MUC room identity for internal state keys.
+ * This is intentionally not full RFC 7622/PRECIS validation.
+ */
+export function normalizeXmppRoomJid(roomJid: string): string | undefined {
+  const roomBareJid = bareJid(roomJid);
+  const separatorIndex = roomBareJid.indexOf("@");
+  if (
+    separatorIndex <= 0 ||
+    separatorIndex !== roomBareJid.lastIndexOf("@") ||
+    separatorIndex === roomBareJid.length - 1
+  ) {
+    return undefined;
+  }
+
+  const localpart = roomBareJid.slice(0, separatorIndex).toLowerCase().normalize("NFC");
+  const unicodeDomain = roomBareJid.slice(separatorIndex + 1).normalize("NFC");
+  const asciiDomain = domainToASCII(unicodeDomain);
+  if (!asciiDomain) return undefined;
+
+  return `${localpart}@${asciiDomain.toLowerCase()}`;
 }
 
 /**

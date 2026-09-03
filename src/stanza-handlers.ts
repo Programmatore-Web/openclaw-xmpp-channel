@@ -44,7 +44,12 @@ export function setupPresenceHandlers(
         const isSelfPresence = statuses.some((s) => s.attrs.code === "110");
 
         if (isSelfPresence) {
-          const pendingKey = `${accountId}:${normalizeXmppRoomJid(fromBare)}`;
+          const normalizedRoomJid = normalizeXmppRoomJid(fromBare);
+          if (!normalizedRoomJid) {
+            log?.warn?.(`[${accountId}] Ignoring MUC self-presence with invalid room JID`);
+            return;
+          }
+          const pendingKey = `${accountId}:${normalizedRoomJid}`;
           const pending = pendingMucJoins.get(pendingKey);
           if (pending) {
             log?.debug?.(`[${accountId}] MUC self-presence received for ${fromBare}`);
@@ -111,7 +116,12 @@ function handlePresenceError(stanza: Element, accountId: string, from: string, l
     );
   } else if (errorCondition === "gone") {
     // Room no longer exists
-    goneRooms.add(normalizeXmppRoomJid(roomJid));
+    const normalizedRoomJid = normalizeXmppRoomJid(roomJid);
+    if (!normalizedRoomJid) {
+      log?.warn?.(`[${accountId}] Ignoring gone error with invalid MUC room JID`);
+      return;
+    }
+    goneRooms.add(normalizedRoomJid);
     log?.warn?.(`[${accountId}] Configured room ${roomJid} no longer exists`);
   } else if (errorCondition === "recipient-unavailable") {
     // Harmless - server couldn't deliver presence (user offline, no subscription, transient state)
