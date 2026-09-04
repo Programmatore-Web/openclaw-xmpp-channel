@@ -1,6 +1,6 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/core";
-import type { XmppConfig, ResolvedXmppAccount } from "./types.js";
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from 'openclaw/plugin-sdk/core';
+import type { XmppConfig, ResolvedXmppAccount } from './types.js';
 
 /**
  * Get root XMPP config from OpenClaw config

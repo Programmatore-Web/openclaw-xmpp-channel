@@ -1,8 +1,8 @@
-import { xml } from "@xmpp/client";
-import { randomUUID } from "node:crypto";
-import type { XmppConfig, SendResult, Logger } from "./types.js";
-import { getActiveClient } from "./monitor.js";
-import { bareJid } from "./config-schema.js";
+import { xml } from '@xmpp/client';
+import { randomUUID } from 'node:crypto';
+import type { XmppConfig, SendResult, Logger } from './types.js';
+import { getActiveClient } from './monitor.js';
+import { bareJid } from './config-schema.js';
 
 /** Generate a collision-resistant client-side XMPP stanza ID. */
 export function generateXmppMessageId(): string {
@@ -17,9 +17,9 @@ export async function sendXmppMessage(
   options: { log?: unknown; accountId?: string } = {}
 ): Promise<SendResult> {
   const log = options.log as Logger | undefined;
-  const accountId = options.accountId ?? "default";
+  const accountId = options.accountId ?? 'default';
   const client = getActiveClient(accountId);
-  if (!client) return { ok: false, error: "XMPP client not connected" };
+  if (!client) return { ok: false, error: 'XMPP client not connected' };
 
   const target = bareJid(to);
   const normalizedTarget = target.toLowerCase();
@@ -27,9 +27,9 @@ export async function sendXmppMessage(
     config.groups?.some((room) => bareJid(room).toLowerCase() === normalizedTarget) ?? false;
   const messageId = generateXmppMessageId();
   const message = xml(
-    "message",
-    { to: target, type: isMuc ? "groupchat" : "chat", id: messageId },
-    xml("body", {}, text)
+    'message',
+    { to: target, type: isMuc ? 'groupchat' : 'chat', id: messageId },
+    xml('body', {}, text)
   );
 
   try {
@@ -48,19 +48,19 @@ export async function sendPresence(
   accountId: string,
   options: {
     status?: string;
-    show?: "away" | "chat" | "dnd" | "xa";
+    show?: 'away' | 'chat' | 'dnd' | 'xa';
     log?: Logger;
   } = {}
 ): Promise<SendResult> {
   const client = getActiveClient(accountId);
-  if (!client) return { ok: false, error: "XMPP client not connected" };
+  if (!client) return { ok: false, error: 'XMPP client not connected' };
 
   const children = [];
-  if (options.show) children.push(xml("show", {}, options.show));
-  if (options.status) children.push(xml("status", {}, options.status));
+  if (options.show) children.push(xml('show', {}, options.show));
+  if (options.status) children.push(xml('status', {}, options.status));
 
   try {
-    await client.send(xml("presence", {}, ...children));
+    await client.send(xml('presence', {}, ...children));
     return { ok: true };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);

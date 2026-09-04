@@ -5,9 +5,9 @@
  * when an account is removed to prevent memory leaks.
  */
 
-import type { client } from "@xmpp/client";
-import type { Logger } from "./types.js";
-import { clearMucOccupantIdentities } from "./muc-identity.js";
+import type { client } from '@xmpp/client';
+import type { Logger } from './types.js';
+import { clearMucOccupantIdentities } from './muc-identity.js';
 
 // =============================================================================
 // TYPE DEFINITIONS
@@ -100,8 +100,8 @@ export function getRecentInboundMessageId(accountId: string, fromJid: string): s
   if (result) return result;
 
   // For MUC JIDs like "room@conference.example.com/nick", also try just the bare JID
-  if (fromJid.includes("/")) {
-    const bareJidKey = `${accountId}:${fromJid.split("/")[0]}`;
+  if (fromJid.includes('/')) {
+    const bareJidKey = `${accountId}:${fromJid.split('/')[0]}`;
     result = recentInboundMessageIds.get(bareJidKey);
     if (result) return result;
   }
@@ -137,7 +137,7 @@ export function getServerMessageId(
     }
 
     // Try with bare JID (without resource) for MUC messages
-    const bareJid = conversationJid.split("/")[0];
+    const bareJid = conversationJid.split('/')[0];
     if (bareJid !== conversationJid) {
       recentInboundId = getRecentInboundMessageId(accountId, bareJid);
       if (recentInboundId) {
@@ -179,7 +179,7 @@ export function cleanupAccountState(accountId: string, log?: Logger): void {
   for (const [key, pending] of pendingMucJoins.entries()) {
     if (key.startsWith(`${accountId}:`)) {
       clearTimeout(pending.timeout);
-      pending.reject(new Error("Account cleanup"));
+      pending.reject(new Error('Account cleanup'));
       pendingMucJoins.delete(key);
     }
   }

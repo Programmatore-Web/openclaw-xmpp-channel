@@ -5,34 +5,34 @@
  * Handles connection lifecycle, message routing, and event dispatch.
  */
 
-import { client, xml } from "@xmpp/client";
-import type { Element } from "@xmpp/client";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import type { XmppConfig, GatewayStartContext, XmppInboundMessage, Logger } from "./types.js";
-import { resolveConnectHost, extractJidDomain, extractUsername, bareJid } from "./config-schema.js";
-import { selectPasswordSaslMechanism } from "./sasl.js";
+import { client, xml } from '@xmpp/client';
+import type { Element } from '@xmpp/client';
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import type { XmppConfig, GatewayStartContext, XmppInboundMessage, Logger } from './types.js';
+import { resolveConnectHost, extractJidDomain, extractUsername, bareJid } from './config-schema.js';
+import { selectPasswordSaslMechanism } from './sasl.js';
 
 // Import from split modules
-import { activeClients, reconnectStates, sentMessageIds } from "./state.js";
-import { joinMuc } from "./rooms.js";
-import { startKeepalive, stopKeepalive } from "./keepalive.js";
+import { activeClients, reconnectStates, sentMessageIds } from './state.js';
+import { joinMuc } from './rooms.js';
+import { startKeepalive, stopKeepalive } from './keepalive.js';
 import {
   registerStartXmppConnection,
   initReconnectState,
   clearReconnectState,
   abortReconnect,
   scheduleReconnect,
-} from "./reconnect.js";
-import { setupPresenceHandlers } from "./stanza-handlers.js";
-import { handleInboundMessage, handleInboundReaction } from "./inbound.js";
-import { clearMucOccupantIdentities } from "./muc-identity.js";
+} from './reconnect.js';
+import { setupPresenceHandlers } from './stanza-handlers.js';
+import { handleInboundMessage, handleInboundReaction } from './inbound.js';
+import { clearMucOccupantIdentities } from './muc-identity.js';
 
 // =============================================================================
 // RE-EXPORTS for backward compatibility
 // =============================================================================
 
-export { cleanupAccountState } from "./state.js";
-export { sendChatState, sendChatMarker } from "./chat-state.js";
+export { cleanupAccountState } from './state.js';
+export { sendChatState, sendChatMarker } from './chat-state.js';
 
 // =============================================================================
 // UTILITY FUNCTIONS
@@ -62,13 +62,13 @@ export function getActiveClient(accountId: string): ReturnType<typeof client> | 
  */
 export async function startXmppConnection(ctx: GatewayStartContext): Promise<void> {
   const { account, cfg, abortSignal, log, setStatus } = ctx;
-  const accountId = ctx.accountId ?? account.accountId ?? "default";
+  const accountId = ctx.accountId ?? account.accountId ?? 'default';
   const config = account.config;
 
   log?.debug?.(`[${accountId}] Gateway context: hasSetStatus=${!!setStatus}`);
 
   if (!config.jid || !config.password) {
-    throw new Error("XMPP jid and password are required");
+    throw new Error('XMPP jid and password are required');
   }
 
   if (!reconnectStates.has(accountId)) initReconnectState(accountId);
@@ -106,7 +106,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     username,
     credentials: async (authenticate, mechanisms, _fast, entity) => {
       if (!entity.isSecure()) {
-        throw new Error("STARTTLS is required before XMPP authentication");
+        throw new Error('STARTTLS is required before XMPP authentication');
       }
 
       const mechanism = selectPasswordSaslMechanism(mechanisms);
@@ -128,19 +128,19 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     }
   ).streamManagement;
 
-  if (streamManagement && typeof streamManagement.on === "function") {
-    streamManagement.on("resumed", () => {
+  if (streamManagement && typeof streamManagement.on === 'function') {
+    streamManagement.on('resumed', () => {
       log?.info?.(`[${accountId}] XEP-0198 Stream Management: session resumed`);
       setStatus?.({ accountId, connected: true, lastConnectedAt: Date.now() });
     });
 
-    streamManagement.on("fail", (stanza) => {
+    streamManagement.on('fail', (stanza) => {
       log?.warn?.(
         `[${accountId}] XEP-0198 Stream Management: stanza failed to send: ${stanza?.toString()?.slice(0, 100)}`
       );
     });
 
-    streamManagement.on("ack", () => {
+    streamManagement.on('ack', () => {
       log?.debug?.(`[${accountId}] XEP-0198 Stream Management: stanza acknowledged`);
     });
   }
@@ -152,7 +152,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   setupPresenceHandlers(xmpp, accountId, log);
 
   // Connection events
-  xmpp.on("online", async (address) => {
+  xmpp.on('online', async (address) => {
     if (activeClients.get(accountId) !== xmpp) return;
     log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
 
@@ -162,9 +162,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     // Enable XEP-0280 Message Carbons
     try {
       const enableCarbons = xml(
-        "iq",
-        { type: "set", id: `carbons-${Date.now()}` },
-        xml("enable", { xmlns: "urn:xmpp:carbons:2" })
+        'iq',
+        { type: 'set', id: `carbons-${Date.now()}` },
+        xml('enable', { xmlns: 'urn:xmpp:carbons:2' })
       );
       await xmpp.send(enableCarbons);
       log?.debug?.(`[${accountId}] XEP-0280 Message Carbons enabled`);
@@ -176,10 +176,10 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
 
     // Send initial presence
     const initialPresence = xml(
-      "presence",
+      'presence',
       {},
-      xml("status", {}, "OpenClaw Bot Online"),
-      xml("priority", {}, "1")
+      xml('status', {}, 'OpenClaw Bot Online'),
+      xml('priority', {}, '1')
     );
     try {
       await xmpp.send(initialPresence);
@@ -221,7 +221,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     }
   });
 
-  xmpp.on("offline", () => {
+  xmpp.on('offline', () => {
     if (activeClients.get(accountId) !== xmpp) return;
     log?.info?.(`[${accountId}] XMPP offline`);
 
@@ -241,7 +241,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     }
   });
 
-  xmpp.on("error", (err) => {
+  xmpp.on('error', (err) => {
     if (activeClients.get(accountId) !== xmpp) return;
     log?.error?.(`[${accountId}] XMPP error: ${err.message}`);
     setStatus?.({ accountId, lastError: err.message });
@@ -296,7 +296,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     };
 
     if (abortSignal?.aborted) cleanup();
-    else abortSignal?.addEventListener("abort", cleanup);
+    else abortSignal?.addEventListener('abort', cleanup);
   });
 }
 
@@ -309,7 +309,7 @@ registerStartXmppConnection(startXmppConnection);
 
 /** Detect unsupported application-layer encrypted message payloads. */
 export function hasUnsupportedEncryptedPayload(stanza: Element): boolean {
-  return Boolean(stanza.getChild("encryption", "urn:xmpp:eme:0") || stanza.getChild("encrypted"));
+  return Boolean(stanza.getChild('encryption', 'urn:xmpp:eme:0') || stanza.getChild('encrypted'));
 }
 
 export function setupMessageHandler(
@@ -319,18 +319,18 @@ export function setupMessageHandler(
   cfg: OpenClawConfig,
   config: XmppConfig,
   log?: Logger,
-  setStatus?: GatewayStartContext["setStatus"]
+  setStatus?: GatewayStartContext['setStatus']
 ): void {
-  xmpp.on("stanza", async (stanza) => {
+  xmpp.on('stanza', async (stanza) => {
     try {
       log?.debug?.(`[${accountId}] XMPP stanza received: attrs=${JSON.stringify(stanza.attrs)}`);
 
-      if (!stanza.is("message")) return;
+      if (!stanza.is('message')) return;
 
       const mediatedInvite = stanza
-        .getChild("x", "http://jabber.org/protocol/muc#user")
-        ?.getChild("invite");
-      const directInvite = stanza.getChild("x", "jabber:x:conference");
+        .getChild('x', 'http://jabber.org/protocol/muc#user')
+        ?.getChild('invite');
+      const directInvite = stanza.getChild('x', 'jabber:x:conference');
       if (mediatedInvite || directInvite) {
         log?.info?.(`[${accountId}] Ignoring unsolicited MUC invitation`);
         return;
@@ -339,15 +339,15 @@ export function setupMessageHandler(
       // Early check for MUC self-messages.
       const from = stanza.attrs.from;
       if (!from) return;
-      const type = stanza.attrs.type || "chat";
-      const isGroupchat = type === "groupchat";
+      const type = stanza.attrs.type || 'chat';
+      const isGroupchat = type === 'groupchat';
       // Check if this is our own message (from our JID) - this is a carbon copy of our sent message
       // The server assigns a stanza-id that clients use for reactions
       const ourJid = config.jid;
       const isOurOwnMessage = from && bareJid(from) === bareJid(ourJid);
 
       if (isGroupchat) {
-        const senderNickFromFrom = from.split("/")[1];
+        const senderNickFromFrom = from.split('/')[1];
         if (senderNickFromFrom === nickname) {
           log?.debug?.(
             `[${accountId}] XMPP skipping self-message in group (nick=${senderNickFromFrom})`
@@ -358,7 +358,7 @@ export function setupMessageHandler(
 
       // Ignore delayed history messages so a reconnect cannot replay old turns.
       const delay =
-        stanza.getChild("delay", "urn:xmpp:delay") || stanza.getChild("x", "jabber:x:delay");
+        stanza.getChild('delay', 'urn:xmpp:delay') || stanza.getChild('x', 'jabber:x:delay');
       if (delay) {
         log?.debug?.(`[${accountId}] XMPP skipping history message (has delay element)`);
         return;
@@ -367,7 +367,7 @@ export function setupMessageHandler(
       // If this is our own message (carbon copy), capture the server-assigned stanza-id
       // This is needed for reactions - users react to the server's ID of our sent messages
       if (isOurOwnMessage) {
-        const stanzaIdEl = stanza.getChild("stanza-id", "urn:xmpp:sid:0");
+        const stanzaIdEl = stanza.getChild('stanza-id', 'urn:xmpp:sid:0');
         const serverMsgId = stanzaIdEl?.attrs?.id;
         const clientMsgId = stanza.attrs.id;
 
@@ -410,26 +410,26 @@ export function setupMessageHandler(
         return;
       }
 
-      const body = stanza.getChildText("body");
+      const body = stanza.getChildText('body');
       log?.debug?.(
-        `[${accountId}] XMPP message stanza: body=${body ? `"${body.slice(0, 50)}"` : "null"}`
+        `[${accountId}] XMPP message stanza: body=${body ? `"${body.slice(0, 50)}"` : 'null'}`
       );
 
       // XEP-0444: Detect incoming reactions (reactions have no body)
-      const reactionsEl = stanza.getChild("reactions", "urn:xmpp:reactions:0");
+      const reactionsEl = stanza.getChild('reactions', 'urn:xmpp:reactions:0');
       if (reactionsEl) {
         const reactedMsgId = reactionsEl.attrs.id;
-        const reactionChildren = reactionsEl.getChildren("reaction");
-        const emojis = reactionChildren.map((r) => r.text?.() ?? "").filter(Boolean);
+        const reactionChildren = reactionsEl.getChildren('reaction');
+        const emojis = reactionChildren.map((r) => r.text?.() ?? '').filter(Boolean);
         const senderBare = bareJid(from);
 
         // Determine if this is a groupchat or direct message
         const roomJid = isGroupchat ? bareJid(from) : undefined;
-        const senderNick = isGroupchat ? from.split("/")[1] : undefined;
+        const senderNick = isGroupchat ? from.split('/')[1] : undefined;
 
         if (emojis.length > 0) {
           log?.info?.(
-            `[${accountId}] XEP-0444 reaction from ${senderBare}: ${emojis.join(", ")} on message ${reactedMsgId}`
+            `[${accountId}] XEP-0444 reaction from ${senderBare}: ${emojis.join(', ')} on message ${reactedMsgId}`
           );
         } else {
           log?.info?.(
@@ -441,7 +441,7 @@ export function setupMessageHandler(
 
         // Route reaction to OpenClaw so the AI can see and process it
         await handleInboundReaction({
-          reactedMessageId: reactedMsgId || "",
+          reactedMessageId: reactedMsgId || '',
           emojis,
           senderBare,
           senderFull: from,
@@ -463,17 +463,17 @@ export function setupMessageHandler(
 
       // XEP-0066 is retained only as unprivileged text metadata. The URL is
       // surfaced to the model but is never fetched by this plugin.
-      const oobElement = stanza.getChild("x", "jabber:x:oob");
-      const oobUrl = oobElement?.getChildText("url") || undefined;
-      const oobDesc = oobElement?.getChildText("desc") || undefined;
+      const oobElement = stanza.getChild('x', 'jabber:x:oob');
+      const oobUrl = oobElement?.getChildText('url') || undefined;
+      const oobDesc = oobElement?.getChildText('desc') || undefined;
       if (oobUrl) {
         log?.debug?.(
-          `[${accountId}] XEP-0066 inbound URL: ${oobUrl}${oobDesc ? ` (${oobDesc})` : ""}`
+          `[${accountId}] XEP-0066 inbound URL: ${oobUrl}${oobDesc ? ` (${oobDesc})` : ''}`
         );
       }
 
       if (!body && !oobUrl) return;
-      const textBody = body ?? "";
+      const textBody = body ?? '';
 
       // History was checked before body parsing.
 
@@ -486,7 +486,7 @@ export function setupMessageHandler(
 
       if (isGroupchat) {
         roomJid = bareJid(from);
-        senderNick = from.split("/")[1];
+        senderNick = from.split('/')[1];
         // Self-message check already ran above.
       }
 
@@ -496,24 +496,24 @@ export function setupMessageHandler(
       let replyToId: string | undefined;
       let replyToBody: string | undefined;
 
-      const replyElement = stanza.getChild("reply", "urn:xmpp:reply:0");
+      const replyElement = stanza.getChild('reply', 'urn:xmpp:reply:0');
       if (replyElement) {
         replyToId = replyElement.attrs.id;
         log?.debug?.(`[${accountId}] XEP-0461 reply to message: ${replyToId}`);
 
-        const fallbackElement = stanza.getChild("fallback", "urn:xmpp:fallback:0");
+        const fallbackElement = stanza.getChild('fallback', 'urn:xmpp:fallback:0');
         if (fallbackElement && textBody) {
-          const lines = textBody.split("\n");
+          const lines = textBody.split('\n');
           const quotedLines: string[] = [];
           for (const line of lines) {
-            if (line.startsWith(">")) {
+            if (line.startsWith('>')) {
               quotedLines.push(line.slice(1).trim());
             } else {
               break;
             }
           }
           if (quotedLines.length > 0) {
-            replyToBody = quotedLines.join("\n");
+            replyToBody = quotedLines.join('\n');
           }
         }
       }
@@ -523,7 +523,7 @@ export function setupMessageHandler(
         from: senderJid,
         to,
         body: textBody,
-        type: type as XmppInboundMessage["type"],
+        type: type as XmppInboundMessage['type'],
         timestamp: Date.now(),
         isGroup: isGroupchat,
         roomJid,
@@ -536,7 +536,7 @@ export function setupMessageHandler(
         // For MUC: MUST use stanza-id with 'by' attribute matching room JID (per XEP-0444)
         // For DMs: Use stanza-id or fall back to stanza's 'id' attribute
         stanzaId: (() => {
-          const stanzaIdEl = stanza.getChild("stanza-id", "urn:xmpp:sid:0");
+          const stanzaIdEl = stanza.getChild('stanza-id', 'urn:xmpp:sid:0');
           if (stanzaIdEl?.attrs?.id) {
             // For MUC, verify the 'by' attribute matches the room JID
             if (isGroupchat && roomJid) {
@@ -555,7 +555,7 @@ export function setupMessageHandler(
         // XEP-0359 <origin-id>: the SENDER's stable id. For a 1:1 chat this is the
         // id XEP-0444 says a reaction must target — Conversations indexes its own
         // sent messages by origin-id, not by the recipient-server stanza-id.
-        originId: stanza.getChild("origin-id", "urn:xmpp:sid:0")?.attrs?.id || undefined,
+        originId: stanza.getChild('origin-id', 'urn:xmpp:sid:0')?.attrs?.id || undefined,
       };
 
       await handleInboundMessage(message, cfg, accountId, config, log, setStatus);

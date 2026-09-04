@@ -2,7 +2,7 @@
  * XMPP channel status issue detection
  */
 
-import type { ChannelAccountSnapshot, ChannelStatusIssue } from "./types.js";
+import type { ChannelAccountSnapshot, ChannelStatusIssue } from './types.js';
 
 /**
  * XMPP account status fields
@@ -22,14 +22,14 @@ type XmppAccountStatus = {
  * Safely extract string from unknown value
  */
 function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
+  return typeof value === 'string' ? value : undefined;
 }
 
 /**
  * Check if value is a record
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -54,9 +54,7 @@ function readXmppAccountStatus(value: ChannelAccountSnapshot): XmppAccountStatus
 /**
  * Collect status issues for XMPP accounts
  */
-export function collectXmppStatusIssues(
-  accounts: ChannelAccountSnapshot[]
-): ChannelStatusIssue[] {
+export function collectXmppStatusIssues(accounts: ChannelAccountSnapshot[]): ChannelStatusIssue[] {
   const issues: ChannelStatusIssue[] = [];
 
   for (const entry of accounts) {
@@ -65,7 +63,7 @@ export function collectXmppStatusIssues(
       continue;
     }
 
-    const accountId = asString(account.accountId) ?? "default";
+    const accountId = asString(account.accountId) ?? 'default';
     const enabled = account.enabled !== false;
 
     if (!enabled) {
@@ -80,11 +78,11 @@ export function collectXmppStatusIssues(
     // Not configured
     if (!configured) {
       issues.push({
-        channel: "xmpp",
+        channel: 'xmpp',
         accountId,
-        kind: "auth",
-        message: "Not configured (missing JID or password).",
-        fix: "Run: openclaw channels add xmpp (or configure JID and password in config).",
+        kind: 'auth',
+        message: 'Not configured (missing JID or password).',
+        fix: 'Run: openclaw channels add xmpp (or configure JID and password in config).',
       });
       continue;
     }
@@ -92,22 +90,22 @@ export function collectXmppStatusIssues(
     // Running but not connected
     if (running && !connected) {
       issues.push({
-        channel: "xmpp",
+        channel: 'xmpp',
         accountId,
-        kind: "runtime",
-        message: `Configured but disconnected${lastError ? `: ${lastError}` : "."}`,
-        fix: "Check XMPP server connectivity and credentials. Run: openclaw doctor",
+        kind: 'runtime',
+        message: `Configured but disconnected${lastError ? `: ${lastError}` : '.'}`,
+        fix: 'Check XMPP server connectivity and credentials. Run: openclaw doctor',
       });
     }
 
     // Has error
     if (lastError && !issues.some((i) => i.accountId === accountId)) {
       issues.push({
-        channel: "xmpp",
+        channel: 'xmpp',
         accountId,
-        kind: "runtime",
+        kind: 'runtime',
         message: `Error: ${lastError}`,
-        fix: "Check logs for details. Run: openclaw logs --follow",
+        fix: 'Check logs for details. Run: openclaw logs --follow',
       });
     }
   }

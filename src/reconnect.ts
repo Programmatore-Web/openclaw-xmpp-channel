@@ -4,14 +4,14 @@
  * Handles automatic reconnection when connection is lost
  */
 
-import type { GatewayStartContext, Logger } from "./types.js";
+import type { GatewayStartContext, Logger } from './types.js';
 import {
   activeClients,
   reconnectStates,
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_DELAY_MS,
   RECONNECT_MAX_ATTEMPTS,
-} from "./state.js";
+} from './state.js';
 
 // Forward declaration - will be imported from monitor.ts
 // This avoids circular dependency by using dynamic import
