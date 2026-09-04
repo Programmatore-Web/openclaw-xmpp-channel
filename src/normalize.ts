@@ -43,7 +43,7 @@ function isSafeRawLocalpart(localpart: string): boolean {
     const codePoint = localpart.codePointAt(index)!;
     if (
       codePoint <= 0x1f ||
-      codePoint === 0x7f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
       unsafeRawLocalpartCharacters.has(character)
     ) {
       return false;

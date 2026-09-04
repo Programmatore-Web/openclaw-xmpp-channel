@@ -67,6 +67,9 @@ describe('MUC room key normalization', () => {
     ['carriage return', 'bad\rroom@conference.example.com'],
     ['unit separator', 'bad\x1froom@conference.example.com'],
     ['DEL', 'bad\x7froom@conference.example.com'],
+    ['C1 start', 'bad\u0080room@conference.example.com'],
+    ['next line', 'bad\u0085room@conference.example.com'],
+    ['C1 end', 'bad\u009froom@conference.example.com'],
   ])('rejects an invalid raw localpart containing %s', (_label, roomJid) => {
     expect(normalizeXmppRoomJid(roomJid)).toBeUndefined();
   });
