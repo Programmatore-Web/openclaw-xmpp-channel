@@ -47,10 +47,12 @@
     "zod": "4.3.6"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@types/node": "^22.15.0",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
     "eslint": "^9.39.2",
+    "globals": "^14.0.0",
     "prettier": "^3.8.1",
     "rimraf": "^5.0.0",
     "typescript": "^5.3.0",
