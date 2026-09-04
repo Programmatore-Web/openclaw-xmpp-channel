@@ -5,9 +5,9 @@
  * Provides functions to send typing indicators and read receipts
  */
 
-import { xml } from "@xmpp/client";
-import type { Logger } from "./types.js";
-import { activeClients } from "./state.js";
+import { xml } from '@xmpp/client';
+import type { Logger } from './types.js';
+import { activeClients } from './state.js';
 
 /**
  * Send XEP-0085 chat state notification (typing indicator)
@@ -15,7 +15,7 @@ import { activeClients } from "./state.js";
 export async function sendChatState(
   accountId: string,
   to: string,
-  state: "composing" | "paused" | "active" | "inactive" | "gone",
+  state: 'composing' | 'paused' | 'active' | 'inactive' | 'gone',
   log?: Logger,
   isGroup = false
 ): Promise<void> {
@@ -25,12 +25,12 @@ export async function sendChatState(
     return;
   }
 
-  const msgType = isGroup ? "groupchat" : "chat";
+  const msgType = isGroup ? 'groupchat' : 'chat';
 
   const stanza = xml(
-    "message",
+    'message',
     { to, type: msgType },
-    xml(state, { xmlns: "http://jabber.org/protocol/chatstates" })
+    xml(state, { xmlns: 'http://jabber.org/protocol/chatstates' })
   );
 
   try {
@@ -50,7 +50,7 @@ export async function sendChatMarker(
   accountId: string,
   to: string,
   messageId: string,
-  marker: "received" | "displayed" | "acknowledged",
+  marker: 'received' | 'displayed' | 'acknowledged',
   log?: Logger
 ): Promise<void> {
   const xmpp = activeClients.get(accountId);
@@ -60,9 +60,9 @@ export async function sendChatMarker(
   }
 
   const stanza = xml(
-    "message",
-    { to, type: "chat" },
-    xml(marker, { xmlns: "urn:xmpp:chat-markers:0", id: messageId })
+    'message',
+    { to, type: 'chat' },
+    xml(marker, { xmlns: 'urn:xmpp:chat-markers:0', id: messageId })
   );
 
   try {

@@ -4,17 +4,17 @@
  * Handles explicitly configured room join/leave operations and "gone" tracking.
  */
 
-import { xml } from "@xmpp/client";
-import type { client } from "@xmpp/client";
-import type { Logger } from "./types.js";
-import { normalizeXmppRoomJid } from "./normalize.js";
+import { xml } from '@xmpp/client';
+import type { client } from '@xmpp/client';
+import type { Logger } from './types.js';
+import { normalizeXmppRoomJid } from './normalize.js';
 import {
   goneRooms,
   joinedRooms,
   pendingMucJoins,
   MUC_JOIN_TIMEOUT_MS,
   MUC_LEAVE_WAIT_MS,
-} from "./state.js";
+} from './state.js';
 
 // =============================================================================
 // MUC JOIN/LEAVE
@@ -49,7 +49,7 @@ export async function joinMuc(
   if (forceRejoin) {
     log?.debug?.(`[XMPP] Force leave before join: ${roomJid}`);
     try {
-      const leavePresence = xml("presence", { to: fullJid, type: "unavailable" });
+      const leavePresence = xml('presence', { to: fullJid, type: 'unavailable' });
       await xmpp.send(leavePresence);
       // Wait for server to process the leave
       await new Promise((r) => setTimeout(r, MUC_LEAVE_WAIT_MS));
@@ -64,9 +64,9 @@ export async function joinMuc(
   log?.debug?.(`[XMPP] Joining MUC: ${roomJid}`);
 
   const presence = xml(
-    "presence",
+    'presence',
     { to: fullJid },
-    xml("x", { xmlns: "http://jabber.org/protocol/muc" })
+    xml('x', { xmlns: 'http://jabber.org/protocol/muc' })
   );
 
   try {

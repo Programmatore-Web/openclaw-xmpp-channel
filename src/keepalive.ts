@@ -1,13 +1,13 @@
 /**
  * XEP-0199 XMPP Ping (Keepalive)
- * 
+ *
  * Sends periodic ping IQ stanzas to keep the connection alive
  */
 
-import { xml } from "@xmpp/client";
-import type { client } from "@xmpp/client";
-import type { Logger } from "./types.js";
-import { keepaliveIntervals, KEEPALIVE_INTERVAL_MS } from "./state.js";
+import { xml } from '@xmpp/client';
+import type { client } from '@xmpp/client';
+import type { Logger } from './types.js';
+import { keepaliveIntervals, KEEPALIVE_INTERVAL_MS } from './state.js';
 
 /**
  * Start XEP-0199 keepalive pings
@@ -29,20 +29,24 @@ export function startKeepalive(
       // XEP-0199: Send IQ ping to server
       const pingId = `ping-${Date.now()}`;
       const ping = xml(
-        "iq",
-        { type: "get", to: server, id: pingId },
-        xml("ping", { xmlns: "urn:xmpp:ping" })
+        'iq',
+        { type: 'get', to: server, id: pingId },
+        xml('ping', { xmlns: 'urn:xmpp:ping' })
       );
-      
+
       await xmpp.send(ping);
       log?.debug?.(`[${accountId}] XEP-0199 keepalive ping sent`);
     } catch (err) {
-      log?.warn?.(`[${accountId}] Keepalive ping failed: ${err instanceof Error ? err.message : String(err)}`);
+      log?.warn?.(
+        `[${accountId}] Keepalive ping failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }, KEEPALIVE_INTERVAL_MS);
 
   keepaliveIntervals.set(accountId, interval);
-  log?.debug?.(`[${accountId}] XEP-0199 keepalive started (${KEEPALIVE_INTERVAL_MS / 1000}s interval)`);
+  log?.debug?.(
+    `[${accountId}] XEP-0199 keepalive started (${KEEPALIVE_INTERVAL_MS / 1000}s interval)`
+  );
 }
 
 /**

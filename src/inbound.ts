@@ -1,20 +1,20 @@
 /** Inbound XMPP authorization, routing, and text reply delivery. */
 
-import { xml } from "@xmpp/client";
-import { randomUUID } from "crypto";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { bareJid } from "./config-schema.js";
-import { getXmppRuntime } from "./runtime.js";
-import { normalizeAllowFrom, isSenderAllowed } from "./normalize.js";
-import type { XmppConfig, XmppInboundMessage, Logger, ChannelAccountStatusPatch } from "./types.js";
-import { activeClients, recordInboundMessageId } from "./state.js";
-import { sendChatState, sendChatMarker } from "./chat-state.js";
-import { getMucOccupantRealJid } from "./muc-identity.js";
+import { xml } from '@xmpp/client';
+import { randomUUID } from 'crypto';
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import { bareJid } from './config-schema.js';
+import { getXmppRuntime } from './runtime.js';
+import { normalizeAllowFrom, isSenderAllowed } from './normalize.js';
+import type { XmppConfig, XmppInboundMessage, Logger, ChannelAccountStatusPatch } from './types.js';
+import { activeClients, recordInboundMessageId } from './state.js';
+import { sendChatState, sendChatMarker } from './chat-state.js';
+import { getMucOccupantRealJid } from './muc-identity.js';
 import {
   buildReplyElement,
   buildReplyFallbackPrefix,
   buildReplyFallbackMarker,
-} from "./replies.js";
+} from './replies.js';
 
 type SenderFacts = {
   senderBare: string;
@@ -47,7 +47,7 @@ async function sendPairingChallenge(
 
   try {
     const { code, created } = await rt.channel.pairing.upsertPairingRequest({
-      channel: "xmpp",
+      channel: 'xmpp',
       accountId,
       id: senderBare,
       meta: { jid: senderBare },
@@ -55,15 +55,15 @@ async function sendPairingChallenge(
     if (!created) return;
 
     const text = rt.channel.pairing.buildPairingReply({
-      channel: "xmpp",
+      channel: 'xmpp',
       idLine: `Your XMPP JID: ${senderBare}`,
       code,
     });
     await client.send(
       xml(
-        "message",
-        { to: senderBare, type: "chat", id: `pairing_${Date.now()}` },
-        xml("body", {}, text)
+        'message',
+        { to: senderBare, type: 'chat', id: `pairing_${Date.now()}` },
+        xml('body', {}, text)
       )
     );
     log?.info?.(`[${accountId}] Created pairing request for ${senderBare}`);
@@ -90,7 +90,7 @@ async function authorizeSender(
   if (facts.isGroup) {
     const roomJid = facts.roomJid ? bareJid(facts.roomJid) : undefined;
     if (!isConfiguredRoom(config, roomJid)) {
-      log?.debug?.(`[XMPP] Blocked message from undeclared room ${roomJid ?? "unknown"}`);
+      log?.debug?.(`[XMPP] Blocked message from undeclared room ${roomJid ?? 'unknown'}`);
       return { allowed: false, isOwner: false, senderIdentity: facts.senderFull };
     }
 
@@ -100,9 +100,9 @@ async function authorizeSender(
         : undefined;
     const senderIdentity = realJid ?? facts.senderFull;
     const isOwner = realJid ? isSenderAllowed(owners, realJid) : false;
-    const groupPolicy = config.groupPolicy ?? "allowlist";
+    const groupPolicy = config.groupPolicy ?? 'allowlist';
 
-    if (groupPolicy === "open") {
+    if (groupPolicy === 'open') {
       return { allowed: true, isOwner, senderIdentity };
     }
 
@@ -125,12 +125,12 @@ async function authorizeSender(
     return { allowed: true, isOwner: true, senderIdentity: facts.senderBare };
   }
 
-  const dmPolicy = config.dmPolicy ?? "pairing";
-  if (dmPolicy === "open") {
+  const dmPolicy = config.dmPolicy ?? 'pairing';
+  if (dmPolicy === 'open') {
     return { allowed: true, isOwner: false, senderIdentity: facts.senderBare };
   }
 
-  if (dmPolicy === "allowlist") {
+  if (dmPolicy === 'allowlist') {
     const dmAllowlist = normalizeAllowFrom(config.dmAllowlist);
     return {
       allowed: isSenderAllowed(dmAllowlist, facts.senderBare),
@@ -139,10 +139,10 @@ async function authorizeSender(
     };
   }
 
-  if (dmPolicy === "pairing") {
+  if (dmPolicy === 'pairing') {
     try {
       const approved = await getXmppRuntime().channel.pairing.readAllowFromStore({
-        channel: "xmpp",
+        channel: 'xmpp',
         accountId,
       });
       if (isSenderAllowed(normalizeAllowFrom(approved.map(String)), facts.senderBare)) {
@@ -193,15 +193,15 @@ export async function handleInboundMessage(
   log?.info?.(`[XMPP] Authorized inbound text from=${senderIdentity} isGroup=${message.isGroup}`);
 
   if (config.sendReadReceipts !== false && message.id && !message.isGroup) {
-    await sendChatMarker(accountId, senderBare, message.id, "displayed", log);
+    await sendChatMarker(accountId, senderBare, message.id, 'displayed', log);
   }
 
   const route = rt.channel.routing.resolveAgentRoute({
     cfg,
-    channel: "xmpp",
+    channel: 'xmpp',
     accountId,
     peer: {
-      kind: message.isGroup ? "group" : "direct",
+      kind: message.isGroup ? 'group' : 'direct',
       id: message.isGroup ? message.roomJid! : senderBare,
     },
   });
@@ -212,8 +212,8 @@ export async function handleInboundMessage(
 
   let displayBody = message.body;
   if (message.oobUrl && !displayBody.includes(message.oobUrl)) {
-    const description = message.oobDesc ? ` (${message.oobDesc})` : "";
-    displayBody = `${displayBody ? `${displayBody}\n` : ""}[Shared URL: ${message.oobUrl}${description}]`;
+    const description = message.oobDesc ? ` (${message.oobDesc})` : '';
+    displayBody = `${displayBody ? `${displayBody}\n` : ''}[Shared URL: ${message.oobUrl}${description}]`;
   }
 
   const msgId = message.stanzaId || message.id || `xmpp-${Date.now()}`;
@@ -225,17 +225,17 @@ export async function handleInboundMessage(
     To: `xmpp:${message.to}`,
     SessionKey: route.sessionKey,
     AccountId: accountId,
-    ChatType: message.isGroup ? "group" : "direct",
+    ChatType: message.isGroup ? 'group' : 'direct',
     ConversationLabel: message.isGroup ? message.roomJid : senderBare,
-    SenderName: message.senderNick || senderBare.split("@")[0],
+    SenderName: message.senderNick || senderBare.split('@')[0],
     SenderId: senderIdentity,
-    Provider: "xmpp",
-    Surface: "xmpp",
+    Provider: 'xmpp',
+    Surface: 'xmpp',
     MessageSid: msgId,
     messageId: msgId,
     ReplyToId: message.replyToId,
     ReplyToBody: message.replyToBody,
-    OriginatingChannel: "xmpp" as const,
+    OriginatingChannel: 'xmpp' as const,
     OriginatingTo: `xmpp:${message.isGroup ? message.roomJid : senderBare}`,
     CommandAuthorized: access.isOwner,
     InboundAccessAuthorized: true,
@@ -260,7 +260,7 @@ export async function handleInboundMessage(
       ? undefined
       : {
           sessionKey: route.mainSessionKey,
-          channel: "xmpp",
+          channel: 'xmpp',
           to: senderBare,
           accountId,
         },
@@ -270,14 +270,14 @@ export async function handleInboundMessage(
   });
 
   const replyTo = message.isGroup ? message.roomJid! : senderBare;
-  await sendChatState(accountId, replyTo, "composing", log, message.isGroup);
+  await sendChatState(accountId, replyTo, 'composing', log, message.isGroup);
   let delivered = false;
 
   await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx,
     cfg,
     dispatcherOptions: {
-      responsePrefix: "",
+      responsePrefix: '',
       deliver: async (payload: ReplyPayload) => {
         delivered = true;
         debouncedDeliver(
@@ -296,7 +296,7 @@ export async function handleInboundMessage(
     },
   });
 
-  if (!delivered) await sendChatState(accountId, replyTo, "active", log, message.isGroup);
+  if (!delivered) await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
 }
 
 type ReplyPayload = { text?: string; markdown?: string };
@@ -317,7 +317,7 @@ function debouncedDeliver(
   deliver: (combined: ReplyPayload) => Promise<void> | void,
   onError: (err: unknown) => void
 ): void {
-  const text = payload.markdown || payload.text || "";
+  const text = payload.markdown || payload.text || '';
   const pending = pendingDeliveries.get(key) ?? { texts: [], deliver, onError };
   if (text) pending.texts.push(text);
   if (pending.timer) clearTimeout(pending.timer);
@@ -325,7 +325,7 @@ function debouncedDeliver(
 
   pending.timer = setTimeout(() => {
     pendingDeliveries.delete(key);
-    const combinedText = pending.texts.join("\n\n");
+    const combinedText = pending.texts.join('\n\n');
     void Promise.resolve(pending.deliver({ text: combinedText, markdown: combinedText })).catch(
       pending.onError
     );
@@ -351,29 +351,29 @@ async function deliverReply(
 
   const text = payload.markdown || payload.text;
   if (!text) {
-    await sendChatState(accountId, replyTo, "active", log, message.isGroup);
+    await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
     return;
   }
 
   const children: ReturnType<typeof xml>[] = [];
   let body = text;
   if (message.id) {
-    const { prefix, length } = buildReplyFallbackPrefix(message.body || "");
+    const { prefix, length } = buildReplyFallbackPrefix(message.body || '');
     if (length > 0) {
       body = prefix + text;
       children.push(buildReplyFallbackMarker(0, length));
     }
     children.push(buildReplyElement(message.id, message.isGroup ? message.from : senderIdentity));
   }
-  children.push(xml("body", {}, body));
+  children.push(xml('body', {}, body));
 
   try {
     await client.send(
       xml(
-        "message",
+        'message',
         {
           to: replyTo,
-          type: message.isGroup ? "groupchat" : "chat",
+          type: message.isGroup ? 'groupchat' : 'chat',
           id: randomUUID(),
         },
         ...children
@@ -385,7 +385,7 @@ async function deliverReply(
     log?.error?.(`[XMPP] Failed to send reply: ${error}`);
     setStatus?.({ accountId, lastError: error });
   } finally {
-    await sendChatState(accountId, replyTo, "active", log, message.isGroup);
+    await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
   }
 }
 
@@ -421,13 +421,13 @@ export async function handleInboundReaction(params: {
 
   params.setStatus?.({ accountId: params.accountId, lastInboundAt: Date.now() });
   const rt = getXmppRuntime();
-  const reactionText = `[reaction] ${params.emojis.join(" ")} on message "${params.reactedMessageId}"`;
+  const reactionText = `[reaction] ${params.emojis.join(' ')} on message "${params.reactedMessageId}"`;
   const route = rt.channel.routing.resolveAgentRoute({
     cfg: params.cfg,
-    channel: "xmpp",
+    channel: 'xmpp',
     accountId: params.accountId,
     peer: {
-      kind: params.isGroup ? "group" : "direct",
+      kind: params.isGroup ? 'group' : 'direct',
       id: params.isGroup ? params.roomJid! : params.senderBare,
     },
   });
@@ -443,14 +443,14 @@ export async function handleInboundReaction(params: {
     To: `xmpp:${params.config.jid}`,
     SessionKey: route.sessionKey,
     AccountId: params.accountId,
-    ChatType: params.isGroup ? "group" : "direct",
+    ChatType: params.isGroup ? 'group' : 'direct',
     ConversationLabel: params.isGroup ? params.roomJid : params.senderBare,
-    SenderName: params.senderNick || params.senderBare.split("@")[0],
+    SenderName: params.senderNick || params.senderBare.split('@')[0],
     SenderId: access.senderIdentity,
-    Provider: "xmpp",
-    Surface: "xmpp",
+    Provider: 'xmpp',
+    Surface: 'xmpp',
     MessageSid: `reaction_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    OriginatingChannel: "xmpp" as const,
+    OriginatingChannel: 'xmpp' as const,
     OriginatingTo: `xmpp:${params.isGroup ? params.roomJid : params.senderBare}`,
     CommandAuthorized: access.isOwner,
     InboundAccessAuthorized: true,
@@ -467,7 +467,7 @@ export async function handleInboundReaction(params: {
       ? undefined
       : {
           sessionKey: route.mainSessionKey,
-          channel: "xmpp",
+          channel: 'xmpp',
           to: params.senderBare,
           accountId: params.accountId,
         },
@@ -480,7 +480,7 @@ export async function handleInboundReaction(params: {
     ctx,
     cfg: params.cfg,
     dispatcherOptions: {
-      responsePrefix: "",
+      responsePrefix: '',
       deliver: async () => undefined,
     },
   });

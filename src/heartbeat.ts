@@ -2,9 +2,9 @@
  * XMPP heartbeat adapter
  */
 
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { resolveXmppAccount } from "./accounts.js";
-import { getActiveClient } from "./monitor.js";
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import { resolveXmppAccount } from './accounts.js';
+import { getActiveClient } from './monitor.js';
 
 /**
  * Heartbeat check result
@@ -34,21 +34,21 @@ export async function checkXmppHeartbeatReady(params: {
 
   // Check if configured
   if (!account.config?.jid || !account.config?.password) {
-    return { ok: false, reason: "xmpp-not-configured" };
+    return { ok: false, reason: 'xmpp-not-configured' };
   }
 
   // Check if enabled
   if (!account.enabled) {
-    return { ok: false, reason: "xmpp-disabled" };
+    return { ok: false, reason: 'xmpp-disabled' };
   }
 
   // Check if client is connected
   const client = getActiveClient(account.accountId);
   if (!client) {
-    return { ok: false, reason: "xmpp-not-connected" };
+    return { ok: false, reason: 'xmpp-not-connected' };
   }
 
-  return { ok: true, reason: "ok" };
+  return { ok: true, reason: 'ok' };
 }
 
 /**
@@ -62,23 +62,23 @@ export function resolveXmppHeartbeatRecipients(
 
   // If specific recipient provided
   if (opts.to?.trim()) {
-    return { recipients: [opts.to.trim()], source: "explicit" };
+    return { recipients: [opts.to.trim()], source: 'explicit' };
   }
 
   // Get from allowFrom
   const allowFrom = (xmppConfig?.allowFrom as string[] | undefined) ?? [];
-  const filtered = allowFrom.filter((entry) => entry !== "*" && entry.trim());
+  const filtered = allowFrom.filter((entry) => entry !== '*' && entry.trim());
 
   if (filtered.length === 0) {
-    return { recipients: [], source: "none" };
+    return { recipients: [], source: 'none' };
   }
 
   if (opts.all) {
-    return { recipients: filtered, source: "allowFrom-all" };
+    return { recipients: filtered, source: 'allowFrom-all' };
   }
 
   // Return first recipient by default
-  return { recipients: [filtered[0]], source: "allowFrom" };
+  return { recipients: [filtered[0]], source: 'allowFrom' };
 }
 
 /**

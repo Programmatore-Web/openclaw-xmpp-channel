@@ -9,8 +9,8 @@
  * The reply pointer, quoted body prefix, and matching fallback marker are
  * emitted together so older clients retain readable context.
  */
-import { xml } from "@xmpp/client";
-import type { Element } from "@xmpp/client";
+import { xml } from '@xmpp/client';
+import type { Element } from '@xmpp/client';
 
 /**
  * XEP-0461 reply pointer. MUST be a top-level child of the outgoing
@@ -21,8 +21,8 @@ import type { Element } from "@xmpp/client";
  *                            For MUCs: full occupant JID (`room@conference.example.com/nick`).
  */
 export function buildReplyElement(originalMsgId: string, originalSenderJid: string): Element {
-  return xml("reply", {
-    xmlns: "urn:xmpp:reply:0",
+  return xml('reply', {
+    xmlns: 'urn:xmpp:reply:0',
     id: originalMsgId,
     to: originalSenderJid,
   });
@@ -50,15 +50,15 @@ const MAX_QUOTE_CHARS = 280;
 
 export function buildReplyFallbackPrefix(originalBody: string): { prefix: string; length: number } {
   const trimmed = originalBody.trim();
-  if (!trimmed) return { prefix: "", length: 0 };
+  if (!trimmed) return { prefix: '', length: 0 };
 
   const quoted =
-    trimmed.length > MAX_QUOTE_CHARS ? trimmed.slice(0, MAX_QUOTE_CHARS).trimEnd() + "…" : trimmed;
+    trimmed.length > MAX_QUOTE_CHARS ? trimmed.slice(0, MAX_QUOTE_CHARS).trimEnd() + '…' : trimmed;
 
-  const quotedLines = quoted.split("\n").map((line) => `> ${line}`);
+  const quotedLines = quoted.split('\n').map((line) => `> ${line}`);
   // Trailing `>\n` separates the quote block from the reply body so the
   // inbound parser's line-prefix loop terminates exactly at the response.
-  const prefix = quotedLines.join("\n") + "\n>\n";
+  const prefix = quotedLines.join('\n') + '\n>\n';
   return { prefix, length: prefix.length };
 }
 
@@ -69,8 +69,8 @@ export function buildReplyFallbackPrefix(originalBody: string): { prefix: string
  */
 export function buildReplyFallbackMarker(start: number, end: number): Element {
   return xml(
-    "fallback",
-    { xmlns: "urn:xmpp:fallback:0", for: "urn:xmpp:reply:0" },
-    xml("body", { start: String(start), end: String(end) })
+    'fallback',
+    { xmlns: 'urn:xmpp:fallback:0', for: 'urn:xmpp:reply:0' },
+    xml('body', { start: String(start), end: String(end) })
   );
 }

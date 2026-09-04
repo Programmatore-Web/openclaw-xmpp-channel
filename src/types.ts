@@ -1,14 +1,14 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 
 /**
  * Direct chat policy type
  */
-export type DmPolicy = "disabled" | "open" | "pairing" | "allowlist";
+export type DmPolicy = 'disabled' | 'open' | 'pairing' | 'allowlist';
 
 /**
  * Group Policy type
  */
-export type GroupPolicy = "open" | "allowlist";
+export type GroupPolicy = 'open' | 'allowlist';
 
 /**
  * XMPP actions configuration
@@ -127,7 +127,7 @@ export interface XmppInboundMessage {
   from: string;
   to: string;
   body: string;
-  type: "chat" | "groupchat" | "headline" | "normal" | "error";
+  type: 'chat' | 'groupchat' | 'headline' | 'normal' | 'error';
   timestamp: number;
   isGroup: boolean;
   roomJid?: string;
@@ -201,13 +201,13 @@ export interface SendResult {
 }
 
 /** Channel message actions supported by this baseline. */
-export type ChannelMessageActionName = "react";
+export type ChannelMessageActionName = 'react';
 
 /**
  * Channel directory entry
  */
 export interface ChannelDirectoryEntry {
-  kind: "user" | "group";
+  kind: 'user' | 'group';
   id: string;
   name?: string;
   raw?: Record<string, unknown>;
@@ -252,7 +252,7 @@ export interface ChannelAccountSnapshot {
 export interface ChannelStatusIssue {
   channel: string;
   accountId: string;
-  kind: "auth" | "runtime" | "config";
+  kind: 'auth' | 'runtime' | 'config';
   message: string;
   fix?: string;
 }

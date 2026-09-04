@@ -1,10 +1,10 @@
-import type { ChannelPlugin, OpenClawConfig } from "openclaw/plugin-sdk/core";
-import type { GroupToolPolicyConfig } from "openclaw/plugin-sdk/channel-policy";
-import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/core";
+import type { ChannelPlugin, OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import type { GroupToolPolicyConfig } from 'openclaw/plugin-sdk/channel-policy';
+import { DEFAULT_ACCOUNT_ID } from 'openclaw/plugin-sdk/core';
 import {
   buildAccountScopedDmSecurityPolicy,
   resolveToolsBySender,
-} from "openclaw/plugin-sdk/channel-policy";
+} from 'openclaw/plugin-sdk/channel-policy';
 import type {
   XmppConfig,
   XmppGroupConfig,
@@ -13,21 +13,21 @@ import type {
   GatewayStartContext,
   ChannelAccountSnapshot,
   ThreadingToolContext,
-} from "./types.js";
-import { xmppChannelConfigSchema, bareJid } from "./config-schema.js";
-import { startXmppConnection } from "./monitor.js";
-import { generateXmppMessageId, sendXmppMessage } from "./outbound.js";
-import { xmppOnboardingAdapter } from "./onboarding.js";
-import { listXmppAccountIds, resolveDefaultXmppAccountId, resolveXmppAccount } from "./accounts.js";
-import { collectXmppStatusIssues } from "./status-issues.js";
-import { xmppDirectoryAdapter, xmppResolverAdapter } from "./directory.js";
-import { xmppMessageActions } from "./actions.js";
-import { xmppHeartbeatAdapter } from "./heartbeat.js";
+} from './types.js';
+import { xmppChannelConfigSchema, bareJid } from './config-schema.js';
+import { startXmppConnection } from './monitor.js';
+import { generateXmppMessageId, sendXmppMessage } from './outbound.js';
+import { xmppOnboardingAdapter } from './onboarding.js';
+import { listXmppAccountIds, resolveDefaultXmppAccountId, resolveXmppAccount } from './accounts.js';
+import { collectXmppStatusIssues } from './status-issues.js';
+import { xmppDirectoryAdapter, xmppResolverAdapter } from './directory.js';
+import { xmppMessageActions } from './actions.js';
+import { xmppHeartbeatAdapter } from './heartbeat.js';
 import {
   normalizeXmppTarget,
   looksLikeXmppJid,
   normalizeXmppMessagingTarget,
-} from "./normalize.js";
+} from './normalize.js';
 
 /**
  * Get XMPP config from OpenClaw config
@@ -58,26 +58,26 @@ function formatAllowFromEntries(allowFrom: Array<string | number>): string[] {
   return allowFrom
     .map((entry) => String(entry).trim())
     .filter(Boolean)
-    .map((entry) => entry.replace(/^(xmpp|jabber):/i, ""))
+    .map((entry) => entry.replace(/^(xmpp|jabber):/i, ''))
     .map((entry) => bareJid(entry).toLowerCase());
 }
 
-const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * XMPP Channel Plugin Definition
  */
 export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
-  id: "xmpp",
+  id: 'xmpp',
   meta: {
-    id: "xmpp",
-    label: "XMPP",
-    selectionLabel: "XMPP (Jabber/Prosody/ejabberd)",
-    docsPath: "/channels/xmpp",
-    docsLabel: "xmpp",
-    blurb: "Connect to XMPP servers including Prosody and ejabberd.",
-    systemImage: "message.badge.filled.fill",
-    aliases: ["jabber", "prosody", "ejabberd"],
+    id: 'xmpp',
+    label: 'XMPP',
+    selectionLabel: 'XMPP (Jabber/Prosody/ejabberd)',
+    docsPath: '/channels/xmpp',
+    docsLabel: 'xmpp',
+    blurb: 'Connect to XMPP servers including Prosody and ejabberd.',
+    systemImage: 'message.badge.filled.fill',
+    aliases: ['jabber', 'prosody', 'ejabberd'],
     order: 70,
     quickstartAllowFrom: true,
   },
@@ -85,7 +85,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
   configSchema: xmppChannelConfigSchema(),
 
   capabilities: {
-    chatTypes: ["direct", "group"] as Array<"direct" | "group">,
+    chatTypes: ['direct', 'group'] as Array<'direct' | 'group'>,
     reactions: true, // XEP-0444
     threads: false,
     media: false,
@@ -95,19 +95,19 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
   // Agent prompts for AI guidance
   agentPrompt: {
     messageToolHints: () => [
-      "- XMPP reactions: ALWAYS include messageId when using action=react (e.g., messageId=abc-123). Use the messageId from the inbound message context.",
+      '- XMPP reactions: ALWAYS include messageId when using action=react (e.g., messageId=abc-123). Use the messageId from the inbound message context.',
     ],
   },
 
-  reload: { configPrefixes: ["channels.xmpp"] },
+  reload: { configPrefixes: ['channels.xmpp'] },
 
   // Onboarding wizard
   setupWizard: xmppOnboardingAdapter,
 
   // Pairing support
   pairing: {
-    idLabel: "xmppSenderId",
-    normalizeAllowEntry: (entry: string) => bareJid(entry.replace(/^(xmpp|jabber):/i, "")),
+    idLabel: 'xmppSenderId',
+    normalizeAllowEntry: (entry: string) => bareJid(entry.replace(/^(xmpp|jabber):/i, '')),
     notifyApproval: async ({ id }: { cfg: OpenClawConfig; id: string }) => {
       // Pairing approval handled via XMPP message when user sends next message
       void id;
@@ -182,15 +182,15 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
     },
 
     isEnabled: (account: ResolvedXmppAccount): boolean => account.enabled,
-    disabledReason: (): string => "disabled",
+    disabledReason: (): string => 'disabled',
 
     isConfigured: (account: ResolvedXmppAccount): boolean =>
       Boolean(account.config?.jid && account.config?.password),
-    unconfiguredReason: (): string => "not configured",
+    unconfiguredReason: (): string => 'not configured',
 
     describeAccount: (account: ResolvedXmppAccount): XmppAccountDescriptor => ({
       accountId: account.accountId,
-      name: account.config?.name || "XMPP",
+      name: account.config?.name || 'XMPP',
       enabled: account.enabled,
       configured: Boolean(account.config?.jid),
       dmPolicy: account.config?.dmPolicy,
@@ -215,24 +215,24 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       accountId?: string | null;
       account: ResolvedXmppAccount;
     }) => {
-      const policy = account.config?.dmPolicy ?? "pairing";
+      const policy = account.config?.dmPolicy ?? 'pairing';
       const owners = account.config?.allowFrom ?? [];
       const allowFrom =
-        policy === "allowlist"
+        policy === 'allowlist'
           ? Array.from(new Set([...owners, ...(account.config?.dmAllowlist ?? [])]))
           : owners;
 
       return buildAccountScopedDmSecurityPolicy({
         cfg,
-        channelKey: "xmpp",
+        channelKey: 'xmpp',
         accountId,
         fallbackAccountId: account.accountId,
         policy,
         allowFrom,
-        policyPathSuffix: "dmPolicy",
-        allowFromPathSuffix: policy === "allowlist" ? "dmAllowlist" : "allowFrom",
-        approveChannelId: "xmpp",
-        normalizeEntry: (raw: string) => bareJid(raw.replace(/^(xmpp|jabber):/i, "")),
+        policyPathSuffix: 'dmPolicy',
+        allowFromPathSuffix: policy === 'allowlist' ? 'dmAllowlist' : 'allowFrom',
+        approveChannelId: 'xmpp',
+        normalizeEntry: (raw: string) => bareJid(raw.replace(/^(xmpp|jabber):/i, '')),
       });
     },
   },
@@ -240,7 +240,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
   // Groups adapter
   groups: {
     resolveRequireMention: ({ cfg }: { cfg: OpenClawConfig }): boolean =>
-      getConfig(cfg).groupPolicy !== "open",
+      getConfig(cfg).groupPolicy !== 'open',
     resolveToolPolicy: (params: {
       cfg: OpenClawConfig;
       groupId?: string | null;
@@ -263,7 +263,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       // First try specific group, then fallback to "*" default
       const groupId = params.groupId ?? undefined;
       const groupConfig: XmppGroupConfig | undefined = groupId ? groupsConfig[groupId] : undefined;
-      const defaultConfig: XmppGroupConfig | undefined = groupsConfig["*"];
+      const defaultConfig: XmppGroupConfig | undefined = groupsConfig['*'];
 
       // Priority: sender-specific in group > group tools > sender-specific in default > default tools
       // 1. Check sender-specific policy for this group
@@ -303,7 +303,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
   // Mentions adapter
   mentions: {
     stripPatterns: ({ ctx }: { ctx: { To?: string } }) => {
-      const selfJid = ctx.To?.replace(/^xmpp:/, "") || "";
+      const selfJid = ctx.To?.replace(/^xmpp:/, '') || '';
       if (!selfJid) return [];
       const escaped = escapeRegExp(bareJid(selfJid));
       return [escaped, `@${escaped}`];
@@ -312,7 +312,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
 
   // Threading adapter
   threading: {
-    resolveReplyToMode: (): "off" | "first" | "all" => "off",
+    resolveReplyToMode: (): 'off' | 'first' | 'all' => 'off',
     buildToolContext: ({
       context,
       hasRepliedRef,
@@ -337,7 +337,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
     normalizeTarget: normalizeXmppMessagingTarget,
     targetResolver: {
       looksLikeId: looksLikeXmppJid,
-      hint: "<user@example.com>",
+      hint: '<user@example.com>',
     },
   },
 
@@ -352,7 +352,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
 
   // Outbound adapter
   outbound: {
-    deliveryMode: "direct" as const,
+    deliveryMode: 'direct' as const,
     textChunkLimit: 10000,
     // Treat the final assistant message as the cron deliverable so OpenClaw's
     // cron classifier applies its recovered-tool-error carve-out (matches native
@@ -382,7 +382,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
         // Check OriginatingTo first (group or DM target)
         const originatingTo = ctx.OriginatingTo as string | undefined;
         if (originatingTo) {
-          const jid = originatingTo.replace(/^xmpp:/, "").trim();
+          const jid = originatingTo.replace(/^xmpp:/, '').trim();
           if (jid && looksLikeXmppJid(jid)) {
             return { ok: true, to: bareJid(jid) };
           }
@@ -397,7 +397,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
         // Check From field
         const from = ctx.From as string | undefined;
         if (from) {
-          const jid = from.replace(/^xmpp:/, "").trim();
+          const jid = from.replace(/^xmpp:/, '').trim();
           if (jid && looksLikeXmppJid(jid)) {
             return { ok: true, to: bareJid(jid) };
           }
@@ -407,7 +407,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       return {
         ok: false,
         error: new Error(
-          "XMPP message requires --to <user@example.com> or must be used within an XMPP session context"
+          'XMPP message requires --to <user@example.com> or must be used within an XMPP session context'
         ),
       };
     },
@@ -427,16 +427,16 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
     }) => {
       const config = getConfig(cfg, accountId ?? undefined);
       if (!config.jid) {
-        throw new Error("XMPP not configured");
+        throw new Error('XMPP not configured');
       }
       const result = await sendXmppMessage(config, to, text, {
         log,
         accountId: accountId ?? undefined,
       });
       if (!result.ok) {
-        throw new Error(result.error ?? "Failed to send XMPP message");
+        throw new Error(result.error ?? 'Failed to send XMPP message');
       }
-      return { channel: "xmpp" as const, messageId: result.messageId ?? generateXmppMessageId() };
+      return { channel: 'xmpp' as const, messageId: result.messageId ?? generateXmppMessageId() };
     },
   },
 
@@ -467,7 +467,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
 
     probeAccount: async ({ account }: { account: ResolvedXmppAccount }) => {
       if (!account.config?.jid) {
-        return { ok: false, error: "Not configured" };
+        return { ok: false, error: 'Not configured' };
       }
       return { ok: true, jid: account.config.jid };
     },

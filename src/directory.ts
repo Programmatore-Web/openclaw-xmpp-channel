@@ -2,12 +2,12 @@
  * XMPP directory adapter - contact/room listings
  */
 
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
-import type { ChannelDirectoryEntry, ChannelResolveResult } from "./types.js";
-import { resolveXmppAccount } from "./accounts.js";
-import { bareJid } from "./config-schema.js";
-import { looksLikeXmppJid } from "./normalize.js";
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import type { RuntimeEnv } from 'openclaw/plugin-sdk/runtime';
+import type { ChannelDirectoryEntry, ChannelResolveResult } from './types.js';
+import { resolveXmppAccount } from './accounts.js';
+import { bareJid } from './config-schema.js';
+import { looksLikeXmppJid } from './normalize.js';
 
 /**
  * Get self JID for account
@@ -24,9 +24,9 @@ export async function getXmppSelf(params: {
   }
 
   return {
-    kind: "user",
+    kind: 'user',
     id: bareJid(jid),
-    name: account.config?.name || "XMPP Bot",
+    name: account.config?.name || 'XMPP Bot',
     raw: { jid: bareJid(jid) },
   };
 }
@@ -41,14 +41,14 @@ export async function listXmppPeersFromConfig(params: {
   const account = resolveXmppAccount(params);
   const allowFrom = account.config?.allowFrom;
 
-  if (!allowFrom || allowFrom.length === 0 || allowFrom.includes("*")) {
+  if (!allowFrom || allowFrom.length === 0 || allowFrom.includes('*')) {
     return [];
   }
 
   return allowFrom
-    .filter((jid) => jid !== "*")
+    .filter((jid) => jid !== '*')
     .map((jid) => ({
-      kind: "user" as const,
+      kind: 'user' as const,
       id: bareJid(jid),
       name: bareJid(jid),
       raw: { jid: bareJid(jid) },
@@ -70,9 +70,9 @@ export async function listXmppGroupsFromConfig(params: {
   }
 
   return groups.map((room) => ({
-    kind: "group" as const,
+    kind: 'group' as const,
     id: bareJid(room),
-    name: bareJid(room).split("@")[0] || room,
+    name: bareJid(room).split('@')[0] || room,
     raw: { roomJid: bareJid(room) },
   }));
 }
@@ -84,7 +84,7 @@ export async function resolveXmppTargets(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
   inputs: string[];
-  kind: "user" | "group";
+  kind: 'user' | 'group';
   runtime: RuntimeEnv;
 }): Promise<ChannelResolveResult[]> {
   const { cfg, accountId, inputs, kind } = params;
@@ -93,10 +93,10 @@ export async function resolveXmppTargets(params: {
   const results: ChannelResolveResult[] = [];
 
   for (const input of inputs) {
-    const trimmed = input.trim().replace(/^(xmpp|jabber):/i, "");
+    const trimmed = input.trim().replace(/^(xmpp|jabber):/i, '');
 
     if (!trimmed) {
-      results.push({ input, resolved: false, note: "empty input" });
+      results.push({ input, resolved: false, note: 'empty input' });
       continue;
     }
 
@@ -107,48 +107,48 @@ export async function resolveXmppTargets(params: {
         input,
         resolved: true,
         id: normalized,
-        name: normalized.split("@")[0],
+        name: normalized.split('@')[0],
       });
       continue;
     }
 
     // Try to find in allowFrom or groups based on kind
-    if (kind === "user") {
+    if (kind === 'user') {
       const allowFrom = account.config?.allowFrom ?? [];
       const match = allowFrom.find(
         (jid) =>
-          jid !== "*" &&
+          jid !== '*' &&
           (bareJid(jid).toLowerCase().includes(trimmed.toLowerCase()) ||
-            bareJid(jid).split("@")[0].toLowerCase() === trimmed.toLowerCase())
+            bareJid(jid).split('@')[0].toLowerCase() === trimmed.toLowerCase())
       );
       if (match) {
         results.push({
           input,
           resolved: true,
           id: bareJid(match),
-          name: bareJid(match).split("@")[0],
+          name: bareJid(match).split('@')[0],
         });
         continue;
       }
-    } else if (kind === "group") {
+    } else if (kind === 'group') {
       const groups = account.config?.groups ?? [];
       const match = groups.find(
         (room) =>
           bareJid(room).toLowerCase().includes(trimmed.toLowerCase()) ||
-          bareJid(room).split("@")[0].toLowerCase() === trimmed.toLowerCase()
+          bareJid(room).split('@')[0].toLowerCase() === trimmed.toLowerCase()
       );
       if (match) {
         results.push({
           input,
           resolved: true,
           id: bareJid(match),
-          name: bareJid(match).split("@")[0],
+          name: bareJid(match).split('@')[0],
         });
         continue;
       }
     }
 
-    results.push({ input, resolved: false, note: "not found" });
+    results.push({ input, resolved: false, note: 'not found' });
   }
 
   return results;

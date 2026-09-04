@@ -1,14 +1,17 @@
-import type { OpenClawConfig, WizardPrompter } from "openclaw/plugin-sdk/core";
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "openclaw/plugin-sdk/core";
-import { formatDocsLink, promptAccountId } from "openclaw/plugin-sdk/setup";
-import type { ChannelSetupWizardAdapter } from "openclaw/plugin-sdk/setup";
-import type { DmPolicy } from "./types.js";
-import { listXmppAccountIds, resolveDefaultXmppAccountId, resolveXmppAccount } from "./accounts.js";
-import { bareJid } from "./config-schema.js";
+import type { OpenClawConfig, WizardPrompter } from 'openclaw/plugin-sdk/core';
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from 'openclaw/plugin-sdk/core';
+import { formatDocsLink, promptAccountId } from 'openclaw/plugin-sdk/setup';
+import type { ChannelSetupWizardAdapter } from 'openclaw/plugin-sdk/setup';
+import type { DmPolicy } from './types.js';
+import { listXmppAccountIds, resolveDefaultXmppAccountId, resolveXmppAccount } from './accounts.js';
+import { bareJid } from './config-schema.js';
 
-const channel = "xmpp" as const;
+const channel = 'xmpp' as const;
 
-function resolveXmppAccountConfigLayout(cfg: OpenClawConfig, accountId?: string): {
+function resolveXmppAccountConfigLayout(
+  cfg: OpenClawConfig,
+  accountId?: string
+): {
   resolvedAccountId: string;
   current: Record<string, unknown>;
   accounts: Record<string, Record<string, unknown>>;
@@ -22,19 +25,16 @@ function resolveXmppAccountConfigLayout(cfg: OpenClawConfig, accountId?: string)
   const hasNestedDefaultConfig =
     nestedAccount !== undefined &&
     nestedAccount !== null &&
-    typeof nestedAccount === "object" &&
+    typeof nestedAccount === 'object' &&
     Object.keys(nestedAccount).length > 0;
-  const useNestedLayout =
-    resolvedAccountId !== DEFAULT_ACCOUNT_ID || hasNestedDefaultConfig;
+  const useNestedLayout = resolvedAccountId !== DEFAULT_ACCOUNT_ID || hasNestedDefaultConfig;
 
   return {
     resolvedAccountId,
     current,
     accounts,
     useNestedLayout,
-    basePath: useNestedLayout
-      ? `channels.xmpp.accounts.${resolvedAccountId}`
-      : "channels.xmpp",
+    basePath: useNestedLayout ? `channels.xmpp.accounts.${resolvedAccountId}` : 'channels.xmpp',
   };
 }
 
@@ -44,8 +44,10 @@ export function updateXmppAccountConfig(
   accountId: string | undefined,
   updates: Record<string, unknown>
 ): OpenClawConfig {
-  const { resolvedAccountId, current, accounts, useNestedLayout } =
-    resolveXmppAccountConfigLayout(cfg, accountId);
+  const { resolvedAccountId, current, accounts, useNestedLayout } = resolveXmppAccountConfigLayout(
+    cfg,
+    accountId
+  );
 
   if (useNestedLayout) {
     return {
@@ -75,7 +77,10 @@ export function updateXmppAccountConfig(
   };
 }
 
-function resolveXmppDmPolicyConfigKeys(cfg: OpenClawConfig, accountId?: string): {
+function resolveXmppDmPolicyConfigKeys(
+  cfg: OpenClawConfig,
+  accountId?: string
+): {
   policyKey: string;
   allowFromKey: string;
 } {
@@ -98,29 +103,29 @@ async function promptXmppCredentials(
   const existing = resolveXmppAccount({ cfg, accountId });
 
   const jid = await prompter.text({
-    message: "XMPP JID (e.g., bot@example.com)",
-    placeholder: "bot@example.com",
+    message: 'XMPP JID (e.g., bot@example.com)',
+    placeholder: 'bot@example.com',
     initialValue: existing?.config?.jid,
     validate: (value) => {
-      const raw = String(value ?? "").trim();
-      if (!raw) return "JID is required";
-      if (!raw.includes("@")) return "JID must include @ symbol";
+      const raw = String(value ?? '').trim();
+      if (!raw) return 'JID is required';
+      if (!raw.includes('@')) return 'JID must include @ symbol';
       return undefined;
     },
   });
 
   const password = await prompter.text({
-    message: "XMPP password",
+    message: 'XMPP password',
     sensitive: true,
     validate: (value) => {
-      if (String(value ?? "").length === 0) return "Password is required";
+      if (String(value ?? '').length === 0) return 'Password is required';
       return undefined;
     },
   });
 
   const server = await prompter.text({
-    message: "TCP connection host (leave empty to use the JID domain)",
-    placeholder: jid.split("@")[1] ?? "",
+    message: 'TCP connection host (leave empty to use the JID domain)',
+    placeholder: jid.split('@')[1] ?? '',
     initialValue: existing?.config?.server,
   });
 
@@ -148,26 +153,26 @@ async function promptXmppOwners(
   accountId: string
 ): Promise<OpenClawConfig> {
   const existing = resolveXmppAccount({ cfg, accountId }).config.allowFrom;
-  const existingLabel = existing?.length ? existing.join(", ") : "none";
+  const existingLabel = existing?.length ? existing.join(', ') : 'none';
 
   await prompter.note(
     [
-      "`allowFrom` defines the bot owners — JIDs that always have direct chat access",
-      "and can manage pairings. At least one owner JID is recommended.",
-      "",
+      '`allowFrom` defines the bot owners — JIDs that always have direct chat access',
+      'and can manage pairings. At least one owner JID is recommended.',
+      '',
       `Current owners: ${existingLabel}`,
-    ].join("\n"),
-    "Bot owners"
+    ].join('\n'),
+    'Bot owners'
   );
 
   const allowFromRaw = await prompter.text({
-    message: "Owner JIDs (comma-separated)",
-    placeholder: "user@example.com",
-    initialValue: existing?.join(", "),
+    message: 'Owner JIDs (comma-separated)',
+    placeholder: 'user@example.com',
+    initialValue: existing?.join(', '),
   });
 
   const allowFromJids = allowFromRaw
-    .split(",")
+    .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
     .map((jid) => bareJid(jid));
@@ -186,12 +191,12 @@ async function promptXmppDmAllowlist(
   const resolvedAccountId = normalizeAccountId(accountId);
   const existing = resolveXmppAccount({ cfg, accountId: resolvedAccountId }).config.dmAllowlist;
   const allowFromRaw = await prompter.text({
-    message: "Direct-message allowlist JIDs (comma-separated)",
-    placeholder: "user@example.com",
-    initialValue: existing?.join(", "),
+    message: 'Direct-message allowlist JIDs (comma-separated)',
+    placeholder: 'user@example.com',
+    initialValue: existing?.join(', '),
   });
   const dmAllowlist = allowFromRaw
-    .split(",")
+    .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean)
     .map((jid) => bareJid(jid));
@@ -210,7 +215,7 @@ async function promptXmppGroups(
   const existing = resolveXmppAccount({ cfg, accountId }).config.groups;
 
   const wantsGroups = await prompter.confirm({
-    message: "Configure group chat rooms?",
+    message: 'Configure group chat rooms?',
     initialValue: (existing?.length ?? 0) > 0,
   });
 
@@ -219,13 +224,13 @@ async function promptXmppGroups(
   }
 
   const groupsRaw = await prompter.text({
-    message: "Group room JIDs (comma-separated)",
-    placeholder: "room@conference.example.com",
-    initialValue: existing?.join(", "),
+    message: 'Group room JIDs (comma-separated)',
+    placeholder: 'room@conference.example.com',
+    initialValue: existing?.join(', '),
   });
 
   const groups = groupsRaw
-    .split(",")
+    .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
 
@@ -244,13 +249,13 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
     const accountId = overrideId ? normalizeAccountId(overrideId) : defaultAccountId;
     const account = resolveXmppAccount({ cfg, accountId });
     const configured = Boolean(account?.config?.jid && account?.config?.password);
-    const accountLabel = accountId === DEFAULT_ACCOUNT_ID ? "default" : accountId;
+    const accountLabel = accountId === DEFAULT_ACCOUNT_ID ? 'default' : accountId;
 
     return {
       channel,
       configured,
-      statusLines: [`XMPP (${accountLabel}): ${configured ? "configured" : "not configured"}`],
-      selectionHint: configured ? "configured" : "not configured",
+      statusLines: [`XMPP (${accountLabel}): ${configured ? 'configured' : 'not configured'}`],
+      selectionHint: configured ? 'configured' : 'not configured',
       quickstartScore: configured ? 3 : 2,
     };
   },
@@ -264,7 +269,7 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
         accountId = await promptAccountId({
           cfg,
           prompter,
-          label: "XMPP",
+          label: 'XMPP',
           currentId: accountId,
           listAccountIds: listXmppAccountIds,
           defaultAccountId: resolveDefaultXmppAccountId(cfg),
@@ -290,11 +295,11 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
 
     await prompter.note(
       [
-        "XMPP configuration complete.",
+        'XMPP configuration complete.',
         `Run \`openclaw gateway\` to start the XMPP connection.`,
-        `Docs: ${formatDocsLink("/xmpp", "xmpp")}`,
-      ].join("\n"),
-      "XMPP setup"
+        `Docs: ${formatDocsLink('/xmpp', 'xmpp')}`,
+      ].join('\n'),
+      'XMPP setup'
     );
 
     return { cfg: next, accountId };
@@ -302,17 +307,14 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
 
   // Guest DM policy is handled by the wizard's dedicated DM-policy pass
   dmPolicy: {
-    label: "XMPP",
+    label: 'XMPP',
     channel,
-    policyKey: "channels.xmpp.dmPolicy",
-    allowFromKey: "channels.xmpp.dmAllowlist",
+    policyKey: 'channels.xmpp.dmPolicy',
+    allowFromKey: 'channels.xmpp.dmAllowlist',
     resolveConfigKeys: (cfg, accountId) => resolveXmppDmPolicyConfigKeys(cfg, accountId),
     getCurrent: (cfg, accountId): DmPolicy =>
-      (
-        resolveXmppAccount({ cfg, accountId: normalizeAccountId(accountId) }).config.dmPolicy as
-          | DmPolicy
-          | undefined
-      ) ?? "pairing",
+      (resolveXmppAccount({ cfg, accountId: normalizeAccountId(accountId) }).config.dmPolicy as
+        DmPolicy | undefined) ?? 'pairing',
     setPolicy: (cfg, policy, accountId) =>
       updateXmppAccountConfig(cfg, accountId, { dmPolicy: policy }),
     promptAllowFrom: async ({ cfg, prompter, accountId }) =>
