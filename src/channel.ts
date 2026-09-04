@@ -16,7 +16,7 @@ import type {
 } from "./types.js";
 import { xmppChannelConfigSchema, bareJid } from "./config-schema.js";
 import { startXmppConnection } from "./monitor.js";
-import { sendXmppMessage } from "./outbound.js";
+import { generateXmppMessageId, sendXmppMessage } from "./outbound.js";
 import { xmppOnboardingAdapter } from "./onboarding.js";
 import { listXmppAccountIds, resolveDefaultXmppAccountId, resolveXmppAccount } from "./accounts.js";
 import { collectXmppStatusIssues } from "./status-issues.js";
@@ -436,7 +436,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       if (!result.ok) {
         throw new Error(result.error ?? "Failed to send XMPP message");
       }
-      return { channel: "xmpp" as const, messageId: result.messageId ?? `msg_${Date.now()}` };
+      return { channel: "xmpp" as const, messageId: result.messageId ?? generateXmppMessageId() };
     },
   },
 

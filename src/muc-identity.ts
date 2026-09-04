@@ -8,12 +8,19 @@
 
 import type { Element } from '@xmpp/client';
 import { bareJid } from './config-schema.js';
+import { normalizeXmppRoomJid } from './normalize.js';
 import type { Logger } from './types.js';
 
 const occupantJids = new Map<string, string>();
 
-function occupantKey(accountId: string, roomJid: string, nick: string): string {
-  return `${accountId}:${bareJid(roomJid).toLowerCase()}:${nick}`;
+function occupantRoomPrefix(accountId: string, roomJid: string): string | undefined {
+  const normalizedRoomJid = normalizeXmppRoomJid(roomJid);
+  return normalizedRoomJid ? `${accountId}:${normalizedRoomJid}:` : undefined;
+}
+
+function occupantKey(accountId: string, roomJid: string, nick: string): string | undefined {
+  const roomPrefix = occupantRoomPrefix(accountId, roomJid);
+  return roomPrefix ? `${roomPrefix}${nick}` : undefined;
 }
 
 /** Record or remove the verified real JID carried by MUC presence. */
@@ -29,7 +36,9 @@ export function trackMucOccupantIdentity(stanza: Element, accountId: string, log
 
   const roomJid = bareJid(from);
   const nick = from.slice(slashIndex + 1);
-  const key = occupantKey(accountId, roomJid, nick);
+  const roomPrefix = occupantRoomPrefix(accountId, roomJid);
+  if (!roomPrefix) return;
+  const key = `${roomPrefix}${nick}`;
 
   if (stanza.attrs.type === 'unavailable') {
     occupantJids.delete(key);
@@ -37,7 +46,6 @@ export function trackMucOccupantIdentity(stanza: Element, accountId: string, log
       .getChildren('status')
       .some((status) => status.attrs.code === '110');
     if (isSelfPresence) {
-      const roomPrefix = `${accountId}:${roomJid.toLowerCase()}:`;
       for (const occupant of occupantJids.keys()) {
         if (occupant.startsWith(roomPrefix)) occupantJids.delete(occupant);
       }
@@ -65,7 +73,8 @@ export function getMucOccupantRealJid(
   roomJid: string,
   nick: string
 ): string | undefined {
-  return occupantJids.get(occupantKey(accountId, roomJid, nick));
+  const key = occupantKey(accountId, roomJid, nick);
+  return key ? occupantJids.get(key) : undefined;
 }
 
 /** Clear identity observations when an account disconnects or is removed. */

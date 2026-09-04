@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isSenderAllowed, normalizeAllowFrom } from '../src/normalize.js';
+import {
+  isSenderAllowed,
+  normalizeAllowFrom,
+  normalizeXmppRoomJid,
+} from '../src/normalize.js';
 
 describe('XMPP allowlist normalization', () => {
   it('treats an undefined allowlist as deny-all', () => {
@@ -22,5 +26,164 @@ describe('XMPP allowlist normalization', () => {
     const normalized = normalizeAllowFrom(['User@Example.com']);
     expect(isSenderAllowed(normalized, 'user@example.com/resource')).toBe(true);
     expect(isSenderAllowed(normalized, 'other@example.com')).toBe(false);
+  });
+});
+
+describe('MUC room key normalization', () => {
+  it('canonicalizes equivalent Unicode localparts and remains idempotent', () => {
+    const decomposed = normalizeXmppRoomJid('Cafe\u0301@conference.example.com');
+    const composed = normalizeXmppRoomJid('Café@conference.example.com');
+
+    expect(decomposed).toBe('café@conference.example.com');
+    expect(composed).toBe(decomposed);
+    expect(normalizeXmppRoomJid(decomposed!)).toBe(decomposed);
+  });
+
+  it('canonicalizes casing and remains idempotent', () => {
+    const mixedCase = normalizeXmppRoomJid('MixedRoom@Conference.Example.com');
+    const lowercase = normalizeXmppRoomJid('mixedroom@conference.example.com');
+
+    expect(mixedCase).toBe(lowercase);
+    expect(normalizeXmppRoomJid(mixedCase!)).toBe(mixedCase);
+  });
+
+  it.each([
+    ['ASCII space', 'bad room@conference.example.com'],
+    ['double quote', 'bad"room@conference.example.com'],
+    ['ampersand', 'bad&room@conference.example.com'],
+    ['apostrophe', "bad'room@conference.example.com"],
+    ['slash', 'bad/room@conference.example.com'],
+    ['colon', 'bad:room@conference.example.com'],
+    ['less-than sign', 'bad<room@conference.example.com'],
+    ['greater-than sign', 'bad>room@conference.example.com'],
+    ['ambiguous at sign', 'bad@room@conference.example.com'],
+    ['raw backslash', String.raw`bad\room@conference.example.com`],
+    ['unknown escape', String.raw`bad\xxroom@conference.example.com`],
+    ['unsupported escape', String.raw`bad\21room@conference.example.com`],
+    ['trailing backslash', String.raw`bad\@conference.example.com`],
+    ['NUL', 'bad\0room@conference.example.com'],
+    ['tab', 'bad\troom@conference.example.com'],
+    ['newline', 'bad\nroom@conference.example.com'],
+    ['carriage return', 'bad\rroom@conference.example.com'],
+    ['unit separator', 'bad\x1froom@conference.example.com'],
+    ['DEL', 'bad\x7froom@conference.example.com'],
+    ['C1 start', 'bad\u0080room@conference.example.com'],
+    ['next line', 'bad\u0085room@conference.example.com'],
+    ['C1 end', 'bad\u009froom@conference.example.com'],
+  ])('rejects an invalid raw localpart containing %s', (_label, roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBeUndefined();
+  });
+
+  it.each(['20', '22', '26', '27', '2f', '3a', '3c', '3e', '40', '5c'])(
+    'preserves the XEP-0106 \\%s escape and remains idempotent',
+    (escapeCode) => {
+      const roomJid = `bad\\${escapeCode}room@conference.example.com`;
+      const normalized = normalizeXmppRoomJid(roomJid);
+
+      expect(normalized).toBe(roomJid);
+      expect(normalizeXmppRoomJid(normalized!)).toBe(normalized);
+    }
+  );
+
+  it('canonicalizes Unicode and ASCII IDN domains and remains idempotent', () => {
+    const unicodeDomain = normalizeXmppRoomJid('room@münchen.example');
+    const asciiDomain = normalizeXmppRoomJid('room@xn--mnchen-3ya.example');
+
+    expect(unicodeDomain).toBe('room@xn--mnchen-3ya.example');
+    expect(asciiDomain).toBe(unicodeDomain);
+    expect(normalizeXmppRoomJid(unicodeDomain!)).toBe(unicodeDomain);
+  });
+
+  it('fails closed when the domain cannot be converted to ASCII', () => {
+    expect(normalizeXmppRoomJid('room@bad domain.example')).toBeUndefined();
+    expect(normalizeXmppRoomJid('room@alias@conference.example')).toBeUndefined();
+  });
+
+  it.each([
+    ['backslash', 'room@foo\\bar.example'],
+    ['slash', 'room@foo/bar.example'],
+    ['question mark', 'room@foo?bar.example'],
+    ['hash', 'room@foo#bar.example'],
+    ['colon', 'room@foo:bar.example'],
+    ['ASCII space', 'room@foo bar.example'],
+    ['tab', 'room@foo\tbar.example'],
+    ['newline', 'room@foo\nbar.example'],
+    ['carriage return', 'room@foo\rbar.example'],
+    ['percent encoding', 'room@foo%2Ebar.example'],
+    ['brackets', 'room@[foo].example'],
+    ['semicolon', 'room@foo;bar.example'],
+    ['double quote', 'room@foo"bar.example'],
+    ['underscore', 'room@foo_bar.example'],
+  ])('rejects %s instead of accepting a partially parsed domain', (_label, roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBeUndefined();
+  });
+
+  it('does not collapse a partially parsed invalid domain onto a valid state key', () => {
+    const invalid = normalizeXmppRoomJid('room@foo\\bar.example');
+    const valid = normalizeXmppRoomJid('room@foo');
+
+    expect(invalid).toBeUndefined();
+    expect(valid).toBe('room@foo');
+    expect(invalid).not.toBe(valid);
+  });
+
+  it('removes one final root dot, rejects empty internal labels, and remains idempotent', () => {
+    const withoutRootDot = normalizeXmppRoomJid('room@conference.example.com');
+    const withRootDot = normalizeXmppRoomJid('room@conference.example.com.');
+
+    expect(withRootDot).toBe(withoutRootDot);
+    expect(withRootDot).toBe('room@conference.example.com');
+    expect(normalizeXmppRoomJid(withRootDot!)).toBe(withRootDot);
+    expect(normalizeXmppRoomJid('room@foo..example.com')).toBeUndefined();
+    expect(normalizeXmppRoomJid('room@conference.example.com..')).toBeUndefined();
+  });
+
+  it('accepts IPv4 and canonicalizes equivalent bracketed IPv6 domainparts', () => {
+    expect(normalizeXmppRoomJid('room@127.0.0.1')).toBe('room@127.0.0.1');
+
+    const loopback = normalizeXmppRoomJid('room@[::1]');
+    const expandedLoopback = normalizeXmppRoomJid('room@[0:0:0:0:0:0:0:1]');
+    expect(loopback).toBe('room@[::1]');
+    expect(expandedLoopback).toBe(loopback);
+
+    const documentation = normalizeXmppRoomJid('room@[2001:0db8:0:0:0:0:0:1]');
+    const compressedDocumentation = normalizeXmppRoomJid('room@[2001:db8::1]');
+    expect(documentation).toBe('room@[2001:db8::1]');
+    expect(compressedDocumentation).toBe(documentation);
+
+    expect(normalizeXmppRoomJid(loopback!)).toBe(loopback);
+    expect(normalizeXmppRoomJid(documentation!)).toBe(documentation);
+  });
+
+  it.each([
+    'room@127.1',
+    'room@2130706433',
+    'room@0177.0.0.1',
+    'room@0x7f.0.0.1',
+  ])('rejects a legacy numeric IPv4 form before WHATWG conversion: %s', (roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBeUndefined();
+  });
+
+  it('does not collapse a legacy IPv4 form onto a standard IPv4 state key', () => {
+    expect(normalizeXmppRoomJid('room@127.1')).toBeUndefined();
+    expect(normalizeXmppRoomJid('room@127.0.0.1')).toBe('room@127.0.0.1');
+  });
+
+  it.each([
+    'room@room123.example.com',
+    'room@123room.example.com',
+    'room@node-127.example.com',
+  ])('keeps a normal hostname containing digits valid: %s', (roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBe(roomJid);
+  });
+
+  it.each([
+    ['missing closing bracket', 'room@[::1'],
+    ['missing opening bracket', 'room@::1]'],
+    ['non-IP contents', 'room@[not-an-ip]'],
+    ['bracketed IPv4', 'room@[127.0.0.1]'],
+    ['IPv6 zone identifier', 'room@[fe80::1%eth0]'],
+  ])('rejects malformed or unsupported IP literals: %s', (_label, roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBeUndefined();
   });
 });

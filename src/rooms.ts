@@ -7,6 +7,7 @@
 import { xml } from "@xmpp/client";
 import type { client } from "@xmpp/client";
 import type { Logger } from "./types.js";
+import { normalizeXmppRoomJid } from "./normalize.js";
 import {
   goneRooms,
   joinedRooms,
@@ -30,8 +31,14 @@ export async function joinMuc(
   accountId?: string,
   forceRejoin = true
 ): Promise<void> {
+  const normalizedRoomJid = normalizeXmppRoomJid(roomJid);
+  if (!normalizedRoomJid) {
+    log?.warn?.(`[XMPP] Skipping invalid MUC room JID: ${roomJid}`);
+    return;
+  }
+
   // Skip rooms that have returned "gone" error
-  if (goneRooms.has(roomJid)) {
+  if (goneRooms.has(normalizedRoomJid)) {
     log?.debug?.(`[XMPP] Skipping gone room: ${roomJid}`);
     return;
   }
@@ -66,7 +73,7 @@ export async function joinMuc(
     // Create promise to wait for self-presence (status code 110) if we have accountId
     let joinConfirmation: Promise<void> | undefined;
     if (accountId) {
-      const pendingKey = `${accountId}:${roomJid}`;
+      const pendingKey = `${accountId}:${normalizedRoomJid}`;
       joinConfirmation = new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => {
           pendingMucJoins.delete(pendingKey);
@@ -92,7 +99,7 @@ export async function joinMuc(
       if (!joinedRooms.has(accountId)) {
         joinedRooms.set(accountId, new Set());
       }
-      joinedRooms.get(accountId)!.add(roomJid);
+      joinedRooms.get(accountId)!.add(normalizedRoomJid);
     }
     log?.info?.(`[XMPP] Joined MUC: ${roomJid}`);
   } catch (err) {
