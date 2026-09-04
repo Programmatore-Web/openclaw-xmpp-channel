@@ -23,6 +23,41 @@ const unsafeDomainDelimiters = new Set([
 ]);
 const asciiDomainLabelPattern = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i;
 const numericIpLikeDomainPattern = /^(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+))*$/i;
+const unsafeRawLocalpartCharacters = new Set([' ', '"', '&', "'", '/', ':', '<', '>', '@']);
+const supportedXep0106EscapeCodes = new Set([
+  '20',
+  '22',
+  '26',
+  '27',
+  '2f',
+  '3a',
+  '3c',
+  '3e',
+  '40',
+  '5c',
+]);
+
+function isSafeRawLocalpart(localpart: string): boolean {
+  for (let index = 0; index < localpart.length; index += 1) {
+    const character = localpart[index];
+    const codePoint = localpart.codePointAt(index)!;
+    if (
+      codePoint <= 0x1f ||
+      codePoint === 0x7f ||
+      unsafeRawLocalpartCharacters.has(character)
+    ) {
+      return false;
+    }
+
+    if (character !== '\\') continue;
+
+    const escapeCode = localpart.slice(index + 1, index + 3);
+    if (!supportedXep0106EscapeCodes.has(escapeCode)) return false;
+    index += 2;
+  }
+
+  return true;
+}
 
 function isSafeDomainInput(domain: string): boolean {
   for (const character of domain) {
@@ -115,7 +150,10 @@ export function normalizeXmppRoomJid(roomJid: string): string | undefined {
     return undefined;
   }
 
-  const localpart = roomBareJid.slice(0, separatorIndex).toLowerCase().normalize("NFC");
+  const rawLocalpart = roomBareJid.slice(0, separatorIndex);
+  if (!isSafeRawLocalpart(rawLocalpart)) return undefined;
+
+  const localpart = rawLocalpart.toLowerCase().normalize("NFC");
   const unicodeDomain = roomBareJid.slice(separatorIndex + 1).normalize("NFC");
   if (unicodeDomain.includes("[") || unicodeDomain.includes("]")) {
     const ipLiteral = normalizeBracketedIpv6Literal(unicodeDomain);

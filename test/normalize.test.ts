@@ -47,6 +47,41 @@ describe('MUC room key normalization', () => {
     expect(normalizeXmppRoomJid(mixedCase!)).toBe(mixedCase);
   });
 
+  it.each([
+    ['ASCII space', 'bad room@conference.example.com'],
+    ['double quote', 'bad"room@conference.example.com'],
+    ['ampersand', 'bad&room@conference.example.com'],
+    ['apostrophe', "bad'room@conference.example.com"],
+    ['slash', 'bad/room@conference.example.com'],
+    ['colon', 'bad:room@conference.example.com'],
+    ['less-than sign', 'bad<room@conference.example.com'],
+    ['greater-than sign', 'bad>room@conference.example.com'],
+    ['ambiguous at sign', 'bad@room@conference.example.com'],
+    ['raw backslash', String.raw`bad\room@conference.example.com`],
+    ['unknown escape', String.raw`bad\xxroom@conference.example.com`],
+    ['unsupported escape', String.raw`bad\21room@conference.example.com`],
+    ['trailing backslash', String.raw`bad\@conference.example.com`],
+    ['NUL', 'bad\0room@conference.example.com'],
+    ['tab', 'bad\troom@conference.example.com'],
+    ['newline', 'bad\nroom@conference.example.com'],
+    ['carriage return', 'bad\rroom@conference.example.com'],
+    ['unit separator', 'bad\x1froom@conference.example.com'],
+    ['DEL', 'bad\x7froom@conference.example.com'],
+  ])('rejects an invalid raw localpart containing %s', (_label, roomJid) => {
+    expect(normalizeXmppRoomJid(roomJid)).toBeUndefined();
+  });
+
+  it.each(['20', '22', '26', '27', '2f', '3a', '3c', '3e', '40', '5c'])(
+    'preserves the XEP-0106 \\%s escape and remains idempotent',
+    (escapeCode) => {
+      const roomJid = `bad\\${escapeCode}room@conference.example.com`;
+      const normalized = normalizeXmppRoomJid(roomJid);
+
+      expect(normalized).toBe(roomJid);
+      expect(normalizeXmppRoomJid(normalized!)).toBe(normalized);
+    }
+  );
+
   it('canonicalizes Unicode and ASCII IDN domains and remains idempotent', () => {
     const unicodeDomain = normalizeXmppRoomJid('room@münchen.example');
     const asciiDomain = normalizeXmppRoomJid('room@xn--mnchen-3ya.example');

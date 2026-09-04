@@ -19,6 +19,22 @@ afterEach(() => {
 });
 
 describe('MUC join confirmation', () => {
+  it('fails closed before joining a room with an invalid raw localpart', async () => {
+    const xmpp = {
+      send: vi.fn(async () => undefined),
+    } as unknown as ReturnType<typeof client>;
+    const log: Logger = { warn: vi.fn() };
+    const invalidRoom = 'bad room@conference.example.com';
+
+    await joinMuc(xmpp, invalidRoom, 'bot', log, accountId, false);
+
+    expect(pendingMucJoins.size).toBe(0);
+    expect(joinedRooms.has(accountId)).toBe(false);
+    expect(xmpp.send).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(log.warn).toHaveBeenCalledWith(`[XMPP] Skipping invalid MUC room JID: ${invalidRoom}`);
+  });
+
   it('resolves a mixed-case configured room from differently-cased self-presence', async () => {
     let stanzaHandler: ((stanza: Element) => Promise<void>) | undefined;
     const xmpp = {
