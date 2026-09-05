@@ -92,6 +92,50 @@ function requireDmPolicyAdapter() {
   return adapter;
 }
 
+describe('XMPP onboarding status Promise contract', () => {
+  it.each([
+    {
+      name: 'unconfigured default',
+      cfg: {},
+      accountOverrides: {},
+      label: 'default',
+      configured: false,
+    },
+    {
+      name: 'root default',
+      cfg: rootConfig,
+      accountOverrides: {},
+      label: 'default',
+      configured: true,
+    },
+    {
+      name: 'named override',
+      cfg: rootConfig,
+      accountOverrides: { xmpp: ' work ' },
+      label: 'work',
+      configured: true,
+    },
+    {
+      name: 'nested default',
+      cfg: nestedDefaultConfig,
+      accountOverrides: { xmpp: 'default' },
+      label: 'default',
+      configured: true,
+    },
+  ])('resolves status for $name', async ({ cfg, accountOverrides, label, configured }) => {
+    const result = xmppOnboardingAdapter.getStatus({ cfg, accountOverrides });
+
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toEqual({
+      channel: 'xmpp',
+      configured,
+      statusLines: [`XMPP (${label}): ${configured ? 'configured' : 'not configured'}`],
+      selectionHint: configured ? 'configured' : 'not configured',
+      quickstartScore: configured ? 3 : 2,
+    });
+  });
+});
+
 describe('XMPP onboarding credentials', () => {
   it('uses a sensitive text prompt and preserves password whitespace', async () => {
     const text = vi.fn(async (options: { message: string; sensitive?: boolean }) => {

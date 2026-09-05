@@ -288,21 +288,23 @@ export async function handleInboundMessage(
     cfg,
     dispatcherOptions: {
       responsePrefix: '',
-      deliver: async (payload: ReplyPayload) => {
-        delivered = true;
-        debouncedDeliver(
-          `${accountId}:${replyTo}`,
-          payload,
-          async (combined) => {
-            await deliverReply(combined, message, accountId, senderIdentity, log, setStatus);
-          },
-          (err) => {
-            const error = err instanceof Error ? err.message : String(err);
-            log?.error?.(`[XMPP] Debounced reply delivery failed: ${error}`);
-            setStatus?.({ accountId, lastError: error });
-          }
-        );
-      },
+      deliver: (payload: ReplyPayload) =>
+        new Promise<void>((resolve) => {
+          delivered = true;
+          debouncedDeliver(
+            `${accountId}:${replyTo}`,
+            payload,
+            async (combined) => {
+              await deliverReply(combined, message, accountId, senderIdentity, log, setStatus);
+            },
+            (err) => {
+              const error = err instanceof Error ? err.message : String(err);
+              log?.error?.(`[XMPP] Debounced reply delivery failed: ${error}`);
+              setStatus?.({ accountId, lastError: error });
+            }
+          );
+          resolve();
+        }),
     },
   });
 
@@ -499,7 +501,7 @@ export async function handleInboundReaction(params: {
     cfg: params.cfg,
     dispatcherOptions: {
       responsePrefix: '',
-      deliver: async () => undefined,
+      deliver: () => Promise.resolve(undefined),
     },
   });
 }

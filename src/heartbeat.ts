@@ -25,30 +25,35 @@ export interface HeartbeatRecipientsResult {
 /**
  * Check if XMPP channel is ready for heartbeat
  */
-export async function checkXmppHeartbeatReady(params: {
+export function checkXmppHeartbeatReady(params: {
   cfg: OpenClawConfig;
   accountId?: string | null;
 }): Promise<HeartbeatCheckResult> {
-  const { cfg, accountId } = params;
-  const account = resolveXmppAccount({ cfg, accountId });
+  return new Promise((resolve) => {
+    const { cfg, accountId } = params;
+    const account = resolveXmppAccount({ cfg, accountId });
 
-  // Check if configured
-  if (!account.config?.jid || !account.config?.password) {
-    return { ok: false, reason: 'xmpp-not-configured' };
-  }
+    // Check if configured
+    if (!account.config?.jid || !account.config?.password) {
+      resolve({ ok: false, reason: 'xmpp-not-configured' });
+      return;
+    }
 
-  // Check if enabled
-  if (!account.enabled) {
-    return { ok: false, reason: 'xmpp-disabled' };
-  }
+    // Check if enabled
+    if (!account.enabled) {
+      resolve({ ok: false, reason: 'xmpp-disabled' });
+      return;
+    }
 
-  // Check if client is connected
-  const client = getActiveClient(account.accountId);
-  if (!client) {
-    return { ok: false, reason: 'xmpp-not-connected' };
-  }
+    // Check if client is connected
+    const client = getActiveClient(account.accountId);
+    if (!client) {
+      resolve({ ok: false, reason: 'xmpp-not-connected' });
+      return;
+    }
 
-  return { ok: true, reason: 'ok' };
+    resolve({ ok: true, reason: 'ok' });
+  });
 }
 
 /**
