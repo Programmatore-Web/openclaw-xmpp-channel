@@ -110,10 +110,13 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
   pairing: {
     idLabel: 'xmppSenderId',
     normalizeAllowEntry: (entry: string) => bareJid(entry.replace(/^(xmpp|jabber):/i, '')),
-    notifyApproval: async ({ id }: { cfg: OpenClawConfig; id: string }) => {
-      // Pairing approval handled via XMPP message when user sends next message
-      void id;
-    },
+    notifyApproval: (params: { cfg: OpenClawConfig; id: string }) =>
+      new Promise<void>((resolve) => {
+        const { id } = params;
+        // Pairing approval handled via XMPP message when user sends next message
+        void id;
+        resolve();
+      }),
   },
 
   // Config adapter
@@ -479,29 +482,33 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
 
     collectStatusIssues: collectXmppStatusIssues,
 
-    probeAccount: async ({ account }: { account: ResolvedXmppAccount }) => {
-      if (!account.config?.jid) {
-        return { ok: false, error: 'Not configured' };
-      }
-      return { ok: true, jid: account.config.jid };
-    },
+    probeAccount: (params: { account: ResolvedXmppAccount }) =>
+      new Promise((resolve) => {
+        const { account } = params;
+        if (!account.config?.jid) {
+          resolve({ ok: false, error: 'Not configured' });
+          return;
+        }
+        resolve({ ok: true, jid: account.config.jid });
+      }),
 
-    buildChannelSummary: async ({
-      account,
-      snapshot,
-    }: {
+    buildChannelSummary: (params: {
       account: ResolvedXmppAccount;
       snapshot?: ChannelAccountSnapshot;
-    }) => ({
-      configured: Boolean(account.config?.jid && account.config?.password),
-      enabled: account.enabled,
-      running: snapshot?.running ?? false,
-      connected: snapshot?.connected ?? false,
-      jid: account.config?.jid,
-      server: account.config?.server,
-      lastConnectedAt: snapshot?.lastConnectedAt ?? null,
-      lastError: snapshot?.lastError ?? null,
-    }),
+    }) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const { account, snapshot } = params;
+        resolve({
+          configured: Boolean(account.config?.jid && account.config?.password),
+          enabled: account.enabled,
+          running: snapshot?.running ?? false,
+          connected: snapshot?.connected ?? false,
+          jid: account.config?.jid,
+          server: account.config?.server,
+          lastConnectedAt: snapshot?.lastConnectedAt ?? null,
+          lastError: snapshot?.lastError ?? null,
+        });
+      }),
 
     buildAccountSnapshot: ({
       account,

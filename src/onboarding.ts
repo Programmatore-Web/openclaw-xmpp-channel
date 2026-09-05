@@ -249,22 +249,24 @@ async function promptXmppGroups(
 export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
   channel,
 
-  getStatus: async ({ cfg, accountOverrides }) => {
-    const overrideId = accountOverrides?.xmpp?.trim();
-    const defaultAccountId = resolveDefaultXmppAccountId(cfg);
-    const accountId = overrideId ? normalizeAccountId(overrideId) : defaultAccountId;
-    const account = resolveXmppAccount({ cfg, accountId });
-    const configured = Boolean(account?.config?.jid && account?.config?.password);
-    const accountLabel = accountId === DEFAULT_ACCOUNT_ID ? 'default' : accountId;
+  getStatus: (params) =>
+    new Promise((resolve) => {
+      const { cfg, accountOverrides } = params;
+      const overrideId = accountOverrides?.xmpp?.trim();
+      const defaultAccountId = resolveDefaultXmppAccountId(cfg);
+      const accountId = overrideId ? normalizeAccountId(overrideId) : defaultAccountId;
+      const account = resolveXmppAccount({ cfg, accountId });
+      const configured = Boolean(account?.config?.jid && account?.config?.password);
+      const accountLabel = accountId === DEFAULT_ACCOUNT_ID ? 'default' : accountId;
 
-    return {
-      channel,
-      configured,
-      statusLines: [`XMPP (${accountLabel}): ${configured ? 'configured' : 'not configured'}`],
-      selectionHint: configured ? 'configured' : 'not configured',
-      quickstartScore: configured ? 3 : 2,
-    };
-  },
+      resolve({
+        channel,
+        configured,
+        statusLines: [`XMPP (${accountLabel}): ${configured ? 'configured' : 'not configured'}`],
+        selectionHint: configured ? 'configured' : 'not configured',
+        quickstartScore: configured ? 3 : 2,
+      });
+    }),
 
   configure: async ({ cfg, prompter, accountOverrides, shouldPromptAccountIds }) => {
     const overrideId = accountOverrides?.xmpp?.trim();
