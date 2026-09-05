@@ -50,7 +50,9 @@ const MAX_QUOTE_CHARS = 280;
 
 export function buildReplyFallbackPrefix(originalBody: string): { prefix: string; length: number } {
   const trimmed = originalBody.trim();
-  if (!trimmed) return { prefix: '', length: 0 };
+  if (!trimmed) {
+    return { prefix: '', length: 0 };
+  }
 
   const quoted =
     trimmed.length > MAX_QUOTE_CHARS ? trimmed.slice(0, MAX_QUOTE_CHARS).trimEnd() + '…' : trimmed;

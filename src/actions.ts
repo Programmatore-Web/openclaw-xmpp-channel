@@ -22,7 +22,9 @@ function reactionEnabled(
   config: Record<string, unknown> | undefined,
   accountId?: string | null
 ): boolean {
-  if (!config) return false;
+  if (!config) {
+    return false;
+  }
   const account = accountId
     ? (config.accounts as Record<string, Record<string, unknown>> | undefined)?.[accountId]
     : undefined;
@@ -32,8 +34,12 @@ function reactionEnabled(
 
 export function listXmppActions(cfg: OpenClawConfig): ChannelMessageActionName[] {
   const config = cfg.channels?.xmpp as Record<string, unknown> | undefined;
-  if (!config) return [];
-  if (reactionEnabled(config)) return ['react'];
+  if (!config) {
+    return [];
+  }
+  if (reactionEnabled(config)) {
+    return ['react'];
+  }
 
   const accounts = config.accounts as Record<string, Record<string, unknown>> | undefined;
   return accounts && Object.keys(accounts).some((accountId) => reactionEnabled(config, accountId))
@@ -42,7 +48,9 @@ export function listXmppActions(cfg: OpenClawConfig): ChannelMessageActionName[]
 }
 
 export function describeXmppMessageTool({ cfg }: { cfg: OpenClawConfig }) {
-  if (!listXmppActions(cfg).includes('react')) return null;
+  if (!listXmppActions(cfg).includes('react')) {
+    return null;
+  }
   return {
     actions: ['react'] as ChannelMessageActionName[],
     schema: [
@@ -88,7 +96,9 @@ async function handleReaction(params: {
   }
 
   const client = getActiveClient(account.accountId);
-  if (!client) return jsonResult({ ok: false, error: 'XMPP client not connected' });
+  if (!client) {
+    return jsonResult({ ok: false, error: 'XMPP client not connected' });
+  }
 
   const target = bareJid(params.target.replace(/^xmpp:/, ''));
   const normalizedTarget = target.toLowerCase();
@@ -150,14 +160,18 @@ export const xmppMessageActions = {
     }
 
     const target = String(params.chatJid || params.to || toolContext?.currentChannelId || '');
-    if (!target) return jsonResult({ ok: false, error: 'Target JID is required' });
+    if (!target) {
+      return jsonResult({ ok: false, error: 'Target JID is required' });
+    }
 
     const account = resolveXmppAccount({ cfg, accountId });
     const normalizedTarget = bareJid(target.replace(/^xmpp:/, ''));
     const messageId = String(
       params.messageId || getRecentInboundMessageId(account.accountId, normalizedTarget) || ''
     );
-    if (!messageId) return jsonResult({ ok: false, error: 'messageId is required for reactions' });
+    if (!messageId) {
+      return jsonResult({ ok: false, error: 'messageId is required for reactions' });
+    }
 
     return handleReaction({
       cfg,

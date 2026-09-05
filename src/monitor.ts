@@ -71,7 +71,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     throw new Error('XMPP jid and password are required');
   }
 
-  if (!reconnectStates.has(accountId)) initReconnectState(accountId);
+  if (!reconnectStates.has(accountId)) {
+    initReconnectState(accountId);
+  }
 
   const jidDomain = extractJidDomain(config.jid);
   const connectHost = resolveConnectHost(config);
@@ -153,7 +155,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
 
   // Connection events
   xmpp.on('online', async (address) => {
-    if (activeClients.get(accountId) !== xmpp) return;
+    if (activeClients.get(accountId) !== xmpp) {
+      return;
+    }
     log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
 
     // Start XEP-0199 keepalive pings
@@ -222,7 +226,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   });
 
   xmpp.on('offline', () => {
-    if (activeClients.get(accountId) !== xmpp) return;
+    if (activeClients.get(accountId) !== xmpp) {
+      return;
+    }
     log?.info?.(`[${accountId}] XMPP offline`);
 
     stopKeepalive(accountId);
@@ -242,7 +248,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   });
 
   xmpp.on('error', (err) => {
-    if (activeClients.get(accountId) !== xmpp) return;
+    if (activeClients.get(accountId) !== xmpp) {
+      return;
+    }
     log?.error?.(`[${accountId}] XMPP error: ${err.message}`);
     setStatus?.({ accountId, lastError: err.message });
   });
@@ -265,7 +273,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     let cleanedUp = false;
 
     const cleanup = () => {
-      if (cleanedUp) return;
+      if (cleanedUp) {
+        return;
+      }
       cleanedUp = true;
 
       const isCurrent = activeClients.get(accountId) === xmpp;
@@ -295,8 +305,11 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
       resolve();
     };
 
-    if (abortSignal?.aborted) cleanup();
-    else abortSignal?.addEventListener('abort', cleanup);
+    if (abortSignal?.aborted) {
+      cleanup();
+    } else {
+      abortSignal?.addEventListener('abort', cleanup);
+    }
   });
 }
 
@@ -325,7 +338,9 @@ export function setupMessageHandler(
     try {
       log?.debug?.(`[${accountId}] XMPP stanza received: attrs=${JSON.stringify(stanza.attrs)}`);
 
-      if (!stanza.is('message')) return;
+      if (!stanza.is('message')) {
+        return;
+      }
 
       const mediatedInvite = stanza
         .getChild('x', 'http://jabber.org/protocol/muc#user')
@@ -338,7 +353,9 @@ export function setupMessageHandler(
 
       // Early check for MUC self-messages.
       const from = stanza.attrs.from;
-      if (!from) return;
+      if (!from) {
+        return;
+      }
       const type = stanza.attrs.type || 'chat';
       const isGroupchat = type === 'groupchat';
       // Check if this is our own message (from our JID) - this is a carbon copy of our sent message
@@ -472,7 +489,9 @@ export function setupMessageHandler(
         );
       }
 
-      if (!body && !oobUrl) return;
+      if (!body && !oobUrl) {
+        return;
+      }
       const textBody = body ?? '';
 
       // History was checked before body parsing.

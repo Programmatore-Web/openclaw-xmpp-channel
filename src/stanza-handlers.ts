@@ -23,12 +23,16 @@ export function setupPresenceHandlers(
 ): void {
   xmpp.on('stanza', async (stanza) => {
     try {
-      if (!stanza.is('presence')) return;
+      if (!stanza.is('presence')) {
+        return;
+      }
 
       const type = stanza.attrs.type;
       const from = stanza.attrs.from;
 
-      if (!from) return;
+      if (!from) {
+        return;
+      }
 
       const fromBare = bareJid(from);
 

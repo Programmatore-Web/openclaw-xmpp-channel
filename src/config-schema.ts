@@ -178,7 +178,9 @@ export function xmppChannelConfigSchema(): ReturnType<typeof buildChannelConfigS
  */
 export function extractJidDomain(jid: string): string {
   const domain = bareJid(jid).split('@')[1];
-  if (!domain) throw new Error(`Invalid JID: ${jid}`);
+  if (!domain) {
+    throw new Error(`Invalid JID: ${jid}`);
+  }
   return domain;
 }
 
@@ -192,7 +194,9 @@ export function resolveConnectHost(config: { jid: string; server?: string }): st
  */
 export function extractUsername(jid: string): string {
   const username = jid.split('@')[0];
-  if (!username) throw new Error(`Invalid JID: ${jid}`);
+  if (!username) {
+    throw new Error(`Invalid JID: ${jid}`);
+  }
   return username;
 }
 

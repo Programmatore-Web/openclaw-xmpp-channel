@@ -43,7 +43,9 @@ export function initReconnectState(accountId: string): void {
  */
 export function clearReconnectState(accountId: string): void {
   const state = reconnectStates.get(accountId);
-  if (state?.timer) clearTimeout(state.timer);
+  if (state?.timer) {
+    clearTimeout(state.timer);
+  }
   reconnectStates.delete(accountId);
 }
 
@@ -75,7 +77,9 @@ const STALE_STOP_TIMEOUT_MS = 5000;
 async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
   const stale = activeClients.get(accountId);
   activeClients.delete(accountId);
-  if (!stale) return;
+  if (!stale) {
+    return;
+  }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -95,7 +99,9 @@ async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
       }),
     ]);
   } finally {
-    if (timer) clearTimeout(timer);
+    if (timer) {
+      clearTimeout(timer);
+    }
   }
 }
 
