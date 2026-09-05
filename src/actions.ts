@@ -8,6 +8,10 @@ import { getActiveClient } from './monitor.js';
 import { bareJid } from './config-schema.js';
 import { getRecentInboundMessageId, getServerMessageId } from './state.js';
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
 function jsonResult(payload: unknown): {
   content: { type: 'text'; text: string }[];
   details: unknown;
@@ -159,16 +163,21 @@ export const xmppMessageActions = {
       return jsonResult({ ok: false, error: `Unsupported XMPP action: ${action}` });
     }
 
-    const target = String(params.chatJid || params.to || toolContext?.currentChannelId || '');
+    const target =
+      nonEmptyString(params.chatJid) ||
+      nonEmptyString(params.to) ||
+      nonEmptyString(toolContext?.currentChannelId) ||
+      '';
     if (!target) {
       return jsonResult({ ok: false, error: 'Target JID is required' });
     }
 
     const account = resolveXmppAccount({ cfg, accountId });
     const normalizedTarget = bareJid(target.replace(/^xmpp:/, ''));
-    const messageId = String(
-      params.messageId || getRecentInboundMessageId(account.accountId, normalizedTarget) || ''
-    );
+    const messageId =
+      nonEmptyString(params.messageId) ||
+      getRecentInboundMessageId(account.accountId, normalizedTarget) ||
+      '';
     if (!messageId) {
       return jsonResult({ ok: false, error: 'messageId is required for reactions' });
     }
