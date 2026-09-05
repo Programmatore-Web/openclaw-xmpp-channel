@@ -151,7 +151,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       }
       const accounts = { ...((xmppConfig.accounts as Record<string, unknown>) ?? {}) };
       accounts[accountKey] = {
-        ...((accounts[accountKey] as Record<string, unknown>) ?? {}),
+        ...(accounts[accountKey] ?? {}),
         enabled,
       };
       return {
@@ -475,7 +475,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       lastMessageAt: null,
       lastEventAt: null,
       lastError: null,
-    } as ChannelAccountSnapshot,
+    },
 
     collectStatusIssues: collectXmppStatusIssues,
 
