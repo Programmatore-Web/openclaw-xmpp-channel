@@ -49,10 +49,14 @@ function isSafeRawLocalpart(localpart: string): boolean {
       return false;
     }
 
-    if (character !== '\\') continue;
+    if (character !== '\\') {
+      continue;
+    }
 
     const escapeCode = localpart.slice(index + 1, index + 3);
-    if (!supportedXep0106EscapeCodes.has(escapeCode)) return false;
+    if (!supportedXep0106EscapeCodes.has(escapeCode)) {
+      return false;
+    }
     index += 2;
   }
 
@@ -76,14 +80,20 @@ function isAcceptableAsciiDomain(domain: string): boolean {
 }
 
 function normalizeBracketedIpv6Literal(domain: string): string | undefined {
-  if (!domain.startsWith('[') || !domain.endsWith(']')) return undefined;
+  if (!domain.startsWith('[') || !domain.endsWith(']')) {
+    return undefined;
+  }
 
   const address = domain.slice(1, -1);
   // Zone identifiers are intentionally unsupported by this local key canonicalizer.
-  if (address.includes('%') || isIP(address) !== 6) return undefined;
+  if (address.includes('%') || isIP(address) !== 6) {
+    return undefined;
+  }
 
   const parsed = SocketAddress.parse(`[${address}]:0`);
-  if (!parsed || parsed.family !== 'ipv6' || !parsed.address) return undefined;
+  if (!parsed || parsed.family !== 'ipv6' || !parsed.address) {
+    return undefined;
+  }
 
   return `[${parsed.address}]`;
 }
@@ -93,19 +103,29 @@ function normalizeBracketedIpv6Literal(domain: string): string | undefined {
  */
 export function looksLikeXmppJid(id: string): boolean {
   const trimmed = id.trim();
-  if (!trimmed) return false;
+  if (!trimmed) {
+    return false;
+  }
 
   // Must have @ symbol
-  if (!trimmed.includes('@')) return false;
+  if (!trimmed.includes('@')) {
+    return false;
+  }
 
   // Must have domain after @
   const parts = trimmed.split('@');
-  if (parts.length !== 2) return false;
-  if (!parts[0] || !parts[1]) return false;
+  if (parts.length !== 2) {
+    return false;
+  }
+  if (!parts[0] || !parts[1]) {
+    return false;
+  }
 
   // Domain should have at least one dot or be localhost
   const domain = parts[1].split('/')[0];
-  if (domain !== 'localhost' && !domain.includes('.')) return false;
+  if (domain !== 'localhost' && !domain.includes('.')) {
+    return false;
+  }
 
   return true;
 }
@@ -114,7 +134,9 @@ export function looksLikeXmppJid(id: string): boolean {
  * Normalize XMPP target for messaging
  */
 export function normalizeXmppTarget(raw: string | null | undefined): string | null {
-  if (!raw) return null;
+  if (!raw) {
+    return null;
+  }
 
   let target = raw.trim();
 
@@ -122,7 +144,9 @@ export function normalizeXmppTarget(raw: string | null | undefined): string | nu
   target = target.replace(/^(xmpp|jabber):/i, '');
 
   // Validate
-  if (!looksLikeXmppJid(target)) return null;
+  if (!looksLikeXmppJid(target)) {
+    return null;
+  }
 
   // Return bare JID
   return bareJid(target);
@@ -141,7 +165,9 @@ export function normalizeXmppMessagingTarget(target: string): string | undefined
  */
 export function normalizeXmppRoomJid(roomJid: string): string | undefined {
   const roomBareJid = bareJid(roomJid);
-  if (roomBareJid !== roomJid) return undefined;
+  if (roomBareJid !== roomJid) {
+    return undefined;
+  }
 
   const separatorIndex = roomBareJid.indexOf('@');
   if (
@@ -153,7 +179,9 @@ export function normalizeXmppRoomJid(roomJid: string): string | undefined {
   }
 
   const rawLocalpart = roomBareJid.slice(0, separatorIndex);
-  if (!isSafeRawLocalpart(rawLocalpart)) return undefined;
+  if (!isSafeRawLocalpart(rawLocalpart)) {
+    return undefined;
+  }
 
   const localpart = rawLocalpart.toLowerCase().normalize('NFC');
   const unicodeDomain = roomBareJid.slice(separatorIndex + 1).normalize('NFC');
@@ -163,14 +191,22 @@ export function normalizeXmppRoomJid(roomJid: string): string | undefined {
   }
 
   const hostname = unicodeDomain.endsWith('.') ? unicodeDomain.slice(0, -1) : unicodeDomain;
-  if (!isSafeDomainInput(hostname)) return undefined;
+  if (!isSafeDomainInput(hostname)) {
+    return undefined;
+  }
 
-  if (isIP(hostname) === 4) return `${localpart}@${hostname}`;
+  if (isIP(hostname) === 4) {
+    return `${localpart}@${hostname}`;
+  }
   // Prevent WHATWG from reinterpreting legacy numeric IPv4 forms as a different address.
-  if (numericIpLikeDomainPattern.test(hostname)) return undefined;
+  if (numericIpLikeDomainPattern.test(hostname)) {
+    return undefined;
+  }
 
   const asciiDomain = domainToASCII(hostname);
-  if (!asciiDomain || !isAcceptableAsciiDomain(asciiDomain)) return undefined;
+  if (!asciiDomain || !isAcceptableAsciiDomain(asciiDomain)) {
+    return undefined;
+  }
 
   return `${localpart}@${asciiDomain.toLowerCase()}`;
 }
@@ -206,8 +242,12 @@ export function normalizeAllowFrom(list?: string[]): NormalizedAllowFrom {
  * Check if sender is allowed based on normalized allowFrom
  */
 export function isSenderAllowed(allowFrom: NormalizedAllowFrom, senderJid: string): boolean {
-  if (allowFrom.hasWildcard) return true;
-  if (allowFrom.entries.length === 0) return false;
+  if (allowFrom.hasWildcard) {
+    return true;
+  }
+  if (allowFrom.entries.length === 0) {
+    return false;
+  }
   const normalized = bareJid(senderJid).toLowerCase();
   return allowFrom.entries.includes(normalized);
 }

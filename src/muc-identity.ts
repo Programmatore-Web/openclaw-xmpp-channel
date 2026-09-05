@@ -25,19 +25,27 @@ function occupantKey(accountId: string, roomJid: string, nick: string): string |
 
 /** Record or remove the verified real JID carried by MUC presence. */
 export function trackMucOccupantIdentity(stanza: Element, accountId: string, log?: Logger): void {
-  if (!stanza.is('presence')) return;
+  if (!stanza.is('presence')) {
+    return;
+  }
 
   const from = stanza.attrs.from;
   const slashIndex = from?.indexOf('/') ?? -1;
-  if (!from || slashIndex < 1) return;
+  if (!from || slashIndex < 1) {
+    return;
+  }
 
   const extension = stanza.getChild('x', 'http://jabber.org/protocol/muc#user');
-  if (!extension) return;
+  if (!extension) {
+    return;
+  }
 
   const roomJid = bareJid(from);
   const nick = from.slice(slashIndex + 1);
   const roomPrefix = occupantRoomPrefix(accountId, roomJid);
-  if (!roomPrefix) return;
+  if (!roomPrefix) {
+    return;
+  }
   const key = `${roomPrefix}${nick}`;
 
   if (stanza.attrs.type === 'unavailable') {
@@ -47,14 +55,18 @@ export function trackMucOccupantIdentity(stanza: Element, accountId: string, log
       .some((status) => status.attrs.code === '110');
     if (isSelfPresence) {
       for (const occupant of occupantJids.keys()) {
-        if (occupant.startsWith(roomPrefix)) occupantJids.delete(occupant);
+        if (occupant.startsWith(roomPrefix)) {
+          occupantJids.delete(occupant);
+        }
       }
     }
     return;
   }
 
   // Only ordinary available presence can establish an occupant identity.
-  if (stanza.attrs.type) return;
+  if (stanza.attrs.type) {
+    return;
+  }
 
   const realJid = extension.getChild('item')?.attrs?.jid;
   if (!realJid) {
@@ -81,6 +93,8 @@ export function getMucOccupantRealJid(
 export function clearMucOccupantIdentities(accountId: string): void {
   const prefix = `${accountId}:`;
   for (const key of occupantJids.keys()) {
-    if (key.startsWith(prefix)) occupantJids.delete(key);
+    if (key.startsWith(prefix)) {
+      occupantJids.delete(key);
+    }
   }
 }

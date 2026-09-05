@@ -19,7 +19,9 @@ export async function sendXmppMessage(
   const log = options.log as Logger | undefined;
   const accountId = options.accountId ?? 'default';
   const client = getActiveClient(accountId);
-  if (!client) return { ok: false, error: 'XMPP client not connected' };
+  if (!client) {
+    return { ok: false, error: 'XMPP client not connected' };
+  }
 
   const target = bareJid(to);
   const normalizedTarget = target.toLowerCase();
@@ -53,11 +55,17 @@ export async function sendPresence(
   } = {}
 ): Promise<SendResult> {
   const client = getActiveClient(accountId);
-  if (!client) return { ok: false, error: 'XMPP client not connected' };
+  if (!client) {
+    return { ok: false, error: 'XMPP client not connected' };
+  }
 
   const children = [];
-  if (options.show) children.push(xml('show', {}, options.show));
-  if (options.status) children.push(xml('status', {}, options.status));
+  if (options.show) {
+    children.push(xml('show', {}, options.show));
+  }
+  if (options.status) {
+    children.push(xml('status', {}, options.status));
+  }
 
   try {
     await client.send(xml('presence', {}, ...children));

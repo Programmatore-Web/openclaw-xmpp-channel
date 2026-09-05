@@ -97,13 +97,17 @@ export function getRecentInboundMessageId(accountId: string, fromJid: string): s
   // Try the exact key first
   let key = `${accountId}:${fromJid}`;
   let result = recentInboundMessageIds.get(key);
-  if (result) return result;
+  if (result) {
+    return result;
+  }
 
   // For MUC JIDs like "room@conference.example.com/nick", also try just the bare JID
   if (fromJid.includes('/')) {
     const bareJidKey = `${accountId}:${fromJid.split('/')[0]}`;
     result = recentInboundMessageIds.get(bareJidKey);
-    if (result) return result;
+    if (result) {
+      return result;
+    }
   }
 
   // For bare JIDs, also try with resource if applicable
@@ -204,10 +208,14 @@ export function cleanupAccountState(accountId: string, log?: Logger): void {
 
   const accountPrefix = `${accountId}:`;
   for (const key of sentMessageIds.keys()) {
-    if (key.startsWith(accountPrefix)) sentMessageIds.delete(key);
+    if (key.startsWith(accountPrefix)) {
+      sentMessageIds.delete(key);
+    }
   }
   for (const key of recentInboundMessageIds.keys()) {
-    if (key.startsWith(accountPrefix)) recentInboundMessageIds.delete(key);
+    if (key.startsWith(accountPrefix)) {
+      recentInboundMessageIds.delete(key);
+    }
   }
 
   log?.debug?.(`[${accountId}] Account state cleaned up`);

@@ -108,8 +108,12 @@ async function promptXmppCredentials(
     initialValue: existing?.config?.jid,
     validate: (value) => {
       const raw = String(value ?? '').trim();
-      if (!raw) return 'JID is required';
-      if (!raw.includes('@')) return 'JID must include @ symbol';
+      if (!raw) {
+        return 'JID is required';
+      }
+      if (!raw.includes('@')) {
+        return 'JID must include @ symbol';
+      }
       return undefined;
     },
   });
@@ -118,7 +122,9 @@ async function promptXmppCredentials(
     message: 'XMPP password',
     sensitive: true,
     validate: (value) => {
-      if (String(value ?? '').length === 0) return 'Password is required';
+      if (String(value ?? '').length === 0) {
+        return 'Password is required';
+      }
       return undefined;
     },
   });

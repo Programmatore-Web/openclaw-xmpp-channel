@@ -31,7 +31,9 @@ type SenderAccess = {
 };
 
 function isConfiguredRoom(config: XmppConfig, roomJid: string | undefined): boolean {
-  if (!roomJid) return false;
+  if (!roomJid) {
+    return false;
+  }
   const room = bareJid(roomJid).toLowerCase();
   return config.groups?.some((entry) => bareJid(entry).toLowerCase() === room) ?? false;
 }
@@ -43,7 +45,9 @@ async function sendPairingChallenge(
 ): Promise<void> {
   const rt = getXmppRuntime();
   const client = activeClients.get(accountId);
-  if (!client) return;
+  if (!client) {
+    return;
+  }
 
   try {
     const { code, created } = await rt.channel.pairing.upsertPairingRequest({
@@ -52,7 +56,9 @@ async function sendPairingChallenge(
       id: senderBare,
       meta: { jid: senderBare },
     });
-    if (!created) return;
+    if (!created) {
+      return;
+    }
 
     const text = rt.channel.pairing.buildPairingReply({
       channel: 'xmpp',
@@ -154,7 +160,9 @@ async function authorizeSender(
       );
     }
 
-    if (issuePairing) await sendPairingChallenge(accountId, facts.senderBare, log);
+    if (issuePairing) {
+      await sendPairingChallenge(accountId, facts.senderBare, log);
+    }
   }
 
   log?.debug?.(`[XMPP] Blocked direct sender ${facts.senderBare} (dmPolicy=${dmPolicy})`);
@@ -186,7 +194,9 @@ export async function handleInboundMessage(
     true,
     log
   );
-  if (!access.allowed) return;
+  if (!access.allowed) {
+    return;
+  }
 
   const rt = getXmppRuntime();
   const senderIdentity = access.senderIdentity;
@@ -296,7 +306,9 @@ export async function handleInboundMessage(
     },
   });
 
-  if (!delivered) await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
+  if (!delivered) {
+    await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
+  }
 }
 
 type ReplyPayload = { text?: string; markdown?: string };
@@ -319,8 +331,12 @@ function debouncedDeliver(
 ): void {
   const text = payload.markdown || payload.text || '';
   const pending = pendingDeliveries.get(key) ?? { texts: [], deliver, onError };
-  if (text) pending.texts.push(text);
-  if (pending.timer) clearTimeout(pending.timer);
+  if (text) {
+    pending.texts.push(text);
+  }
+  if (pending.timer) {
+    clearTimeout(pending.timer);
+  }
   pendingDeliveries.set(key, pending);
 
   pending.timer = setTimeout(() => {
@@ -417,7 +433,9 @@ export async function handleInboundReaction(params: {
     false,
     params.log
   );
-  if (!access.allowed) return;
+  if (!access.allowed) {
+    return;
+  }
 
   params.setStatus?.({ accountId: params.accountId, lastInboundAt: Date.now() });
   const rt = getXmppRuntime();
