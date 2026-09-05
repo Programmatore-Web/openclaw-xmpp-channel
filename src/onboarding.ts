@@ -319,8 +319,8 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
     allowFromKey: 'channels.xmpp.dmAllowlist',
     resolveConfigKeys: (cfg, accountId) => resolveXmppDmPolicyConfigKeys(cfg, accountId),
     getCurrent: (cfg, accountId): DmPolicy =>
-      (resolveXmppAccount({ cfg, accountId: normalizeAccountId(accountId) }).config.dmPolicy as
-        DmPolicy | undefined) ?? 'pairing',
+      resolveXmppAccount({ cfg, accountId: normalizeAccountId(accountId) }).config.dmPolicy ??
+      'pairing',
     setPolicy: (cfg, policy, accountId) =>
       updateXmppAccountConfig(cfg, accountId, { dmPolicy: policy }),
     promptAllowFrom: async ({ cfg, prompter, accountId }) =>

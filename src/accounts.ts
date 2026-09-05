@@ -22,7 +22,7 @@ function getAccountConfig(cfg: OpenClawConfig, accountId: string): XmppConfig | 
     return root;
   }
 
-  return root.accounts?.[accountId] as XmppConfig | undefined;
+  return root.accounts?.[accountId];
 }
 
 /**
@@ -102,7 +102,7 @@ export function resolveXmppAccount(params: {
     // connection" log — the account just disappears while named ones connect).
     // Merge both layouts so the default account resolves whether its jid lives
     // at the root or under accounts[DEFAULT_ACCOUNT_ID].
-    const nested = root?.accounts?.[accountId] as XmppConfig | undefined;
+    const nested = root?.accounts?.[accountId];
     config = { ...(root ?? {}), ...(nested ?? {}) } as XmppConfig;
   } else {
     const accountConfig = getAccountConfig(cfg, accountId);

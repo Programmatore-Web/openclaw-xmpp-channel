@@ -95,7 +95,7 @@ export function recordInboundMessageId(accountId: string, fromJid: string, stanz
  */
 export function getRecentInboundMessageId(accountId: string, fromJid: string): string | undefined {
   // Try the exact key first
-  let key = `${accountId}:${fromJid}`;
+  const key = `${accountId}:${fromJid}`;
   let result = recentInboundMessageIds.get(key);
   if (result) {
     return result;

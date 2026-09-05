@@ -38,7 +38,7 @@ export function setupPresenceHandlers(
 
       // Capture real occupant JIDs when the room exposes them. Group allowlist
       // checks fail closed when this identity cannot be verified.
-      trackMucOccupantIdentity(stanza as Element, accountId, log);
+      trackMucOccupantIdentity(stanza, accountId, log);
 
       // Check for MUC self-presence (status code 110) - indicates we've joined
       // <presence from="room@conference.example.com/mynick"><x xmlns="...muc#user"><status code="110"/></x></presence>
