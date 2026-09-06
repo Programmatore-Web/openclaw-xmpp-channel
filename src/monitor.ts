@@ -154,75 +154,86 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   setupPresenceHandlers(xmpp, accountId, log);
 
   // Connection events
-  xmpp.on('online', async (address) => {
-    if (activeClients.get(accountId) !== xmpp) {
-      return;
-    }
-    log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
-
-    // Start XEP-0199 keepalive pings
-    startKeepalive(xmpp, accountId, jidDomain, log);
-
-    // Enable XEP-0280 Message Carbons
-    try {
-      const enableCarbons = xml(
-        'iq',
-        { type: 'set', id: `carbons-${Date.now()}` },
-        xml('enable', { xmlns: 'urn:xmpp:carbons:2' })
-      );
-      await xmpp.send(enableCarbons);
-      log?.debug?.(`[${accountId}] XEP-0280 Message Carbons enabled`);
-    } catch (err) {
-      log?.warn?.(
-        `[${accountId}] Failed to enable carbons: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-
-    // Send initial presence
-    const initialPresence = xml(
-      'presence',
-      {},
-      xml('status', {}, 'OpenClaw Bot Online'),
-      xml('priority', {}, '1')
-    );
-    try {
-      await xmpp.send(initialPresence);
-      log?.debug?.(`[${accountId}] XMPP initial presence sent`);
-    } catch (err) {
-      log?.error?.(
-        `[${accountId}] XMPP failed to send initial presence: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-
-    // Mark as connected
-    setStatus?.({
-      accountId,
-      running: true,
-      connected: true,
-      lastConnectedAt: Date.now(),
-      lastError: null,
-    });
-
-    // Join only rooms explicitly declared in this account's configuration.
-    // This whole block runs inside the async `online` event handler, so any
-    // throw here (e.g. the stream dropping mid-join and rejecting a send with
-    // a StreamError) escapes as an unhandled rejection. Keep it contained: a
-    // failed join is non-fatal — the reconnect path will retry — and must
-    // never bubble out of the handler.
-    try {
-      if (config.groups && config.groups.length > 0) {
-        log?.info?.(`[${accountId}] Joining ${config.groups.length} group rooms...`);
-        for (const room of config.groups) {
-          await joinMuc(xmpp, room, nickname, log, accountId, true);
-        }
-      } else {
-        log?.debug?.(`[${accountId}] No group rooms configured`);
+  xmpp.on('online', (address): void => {
+    void (async () => {
+      if (activeClients.get(accountId) !== xmpp) {
+        return;
       }
-    } catch (err) {
-      log?.warn?.(
-        `[${accountId}] Room (re)join interrupted (non-fatal, will retry on reconnect): ${err instanceof Error ? err.message : String(err)}`
+      log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
+
+      // Start XEP-0199 keepalive pings
+      startKeepalive(xmpp, accountId, jidDomain, log);
+
+      // Enable XEP-0280 Message Carbons
+      try {
+        const enableCarbons = xml(
+          'iq',
+          { type: 'set', id: `carbons-${Date.now()}` },
+          xml('enable', { xmlns: 'urn:xmpp:carbons:2' })
+        );
+        await xmpp.send(enableCarbons);
+        log?.debug?.(`[${accountId}] XEP-0280 Message Carbons enabled`);
+      } catch (err) {
+        log?.warn?.(
+          `[${accountId}] Failed to enable carbons: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      // Send initial presence
+      const initialPresence = xml(
+        'presence',
+        {},
+        xml('status', {}, 'OpenClaw Bot Online'),
+        xml('priority', {}, '1')
       );
-    }
+      try {
+        await xmpp.send(initialPresence);
+        log?.debug?.(`[${accountId}] XMPP initial presence sent`);
+      } catch (err) {
+        log?.error?.(
+          `[${accountId}] XMPP failed to send initial presence: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+
+      // Mark as connected
+      setStatus?.({
+        accountId,
+        running: true,
+        connected: true,
+        lastConnectedAt: Date.now(),
+        lastError: null,
+      });
+
+      // Join only rooms explicitly declared in this account's configuration.
+      // A failed join is non-fatal: contain it locally so a later reconnect can retry.
+      try {
+        if (config.groups && config.groups.length > 0) {
+          log?.info?.(`[${accountId}] Joining ${config.groups.length} group rooms...`);
+          for (const room of config.groups) {
+            await joinMuc(xmpp, room, nickname, log, accountId, true);
+          }
+        } else {
+          log?.debug?.(`[${accountId}] No group rooms configured`);
+        }
+      } catch (err) {
+        log?.warn?.(
+          `[${accountId}] Room (re)join interrupted (non-fatal, will retry on reconnect): ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    })().catch((err) => {
+      try {
+        log?.error?.(
+          `[${accountId}] XMPP online task failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } catch {
+        // Contain terminal reporting failures without retrying or rethrowing.
+      }
+      try {
+        setStatus?.({ accountId, lastError: err instanceof Error ? err.message : String(err) });
+      } catch {
+        // Status reporting is independent and best-effort at this boundary.
+      }
+    });
   });
 
   xmpp.on('offline', () => {
@@ -334,254 +345,264 @@ export function setupMessageHandler(
   log?: Logger,
   setStatus?: GatewayStartContext['setStatus']
 ): void {
-  xmpp.on('stanza', async (stanza) => {
-    try {
-      log?.debug?.(`[${accountId}] XMPP stanza received: attrs=${JSON.stringify(stanza.attrs)}`);
+  xmpp.on('stanza', (stanza): void => {
+    void (async () => {
+      try {
+        log?.debug?.(`[${accountId}] XMPP stanza received: attrs=${JSON.stringify(stanza.attrs)}`);
 
-      if (!stanza.is('message')) {
-        return;
-      }
-
-      const mediatedInvite = stanza
-        .getChild('x', 'http://jabber.org/protocol/muc#user')
-        ?.getChild('invite');
-      const directInvite = stanza.getChild('x', 'jabber:x:conference');
-      if (mediatedInvite || directInvite) {
-        log?.info?.(`[${accountId}] Ignoring unsolicited MUC invitation`);
-        return;
-      }
-
-      // Early check for MUC self-messages.
-      const from = stanza.attrs.from;
-      if (!from) {
-        return;
-      }
-      const type = stanza.attrs.type || 'chat';
-      const isGroupchat = type === 'groupchat';
-      // Check if this is our own message (from our JID) - this is a carbon copy of our sent message
-      // The server assigns a stanza-id that clients use for reactions
-      const ourJid = config.jid;
-      const isOurOwnMessage = from && bareJid(from) === bareJid(ourJid);
-
-      if (isGroupchat) {
-        const senderNickFromFrom = from.split('/')[1];
-        if (senderNickFromFrom === nickname) {
-          log?.debug?.(
-            `[${accountId}] XMPP skipping self-message in group (nick=${senderNickFromFrom})`
-          );
+        if (!stanza.is('message')) {
           return;
         }
-      }
 
-      // Ignore delayed history messages so a reconnect cannot replay old turns.
-      const delay =
-        stanza.getChild('delay', 'urn:xmpp:delay') || stanza.getChild('x', 'jabber:x:delay');
-      if (delay) {
-        log?.debug?.(`[${accountId}] XMPP skipping history message (has delay element)`);
-        return;
-      }
+        const mediatedInvite = stanza
+          .getChild('x', 'http://jabber.org/protocol/muc#user')
+          ?.getChild('invite');
+        const directInvite = stanza.getChild('x', 'jabber:x:conference');
+        if (mediatedInvite || directInvite) {
+          log?.info?.(`[${accountId}] Ignoring unsolicited MUC invitation`);
+          return;
+        }
 
-      // If this is our own message (carbon copy), capture the server-assigned stanza-id
-      // This is needed for reactions - users react to the server's ID of our sent messages
-      if (isOurOwnMessage) {
-        const stanzaIdEl = stanza.getChild('stanza-id', 'urn:xmpp:sid:0');
-        const serverMsgId = stanzaIdEl?.attrs?.id;
-        const clientMsgId = stanza.attrs.id;
+        // Early check for MUC self-messages.
+        const from = stanza.attrs.from;
+        if (!from) {
+          return;
+        }
+        const type = stanza.attrs.type || 'chat';
+        const isGroupchat = type === 'groupchat';
+        // Check if this is our own message (from our JID) - this is a carbon copy of our sent message
+        // The server assigns a stanza-id that clients use for reactions
+        const ourJid = config.jid;
+        const isOurOwnMessage = from && bareJid(from) === bareJid(ourJid);
 
-        if (serverMsgId && clientMsgId) {
-          // Store mapping: server-side ID -> for later lookup
-          // This helps us understand what users are reacting to
-          const mapKey = `${accountId}:sent:${serverMsgId}`;
-          sentMessageIds.set(mapKey, clientMsgId);
+        if (isGroupchat) {
+          const senderNickFromFrom = from.split('/')[1];
+          if (senderNickFromFrom === nickname) {
+            log?.debug?.(
+              `[${accountId}] XMPP skipping self-message in group (nick=${senderNickFromFrom})`
+            );
+            return;
+          }
+        }
+
+        // Ignore delayed history messages so a reconnect cannot replay old turns.
+        const delay =
+          stanza.getChild('delay', 'urn:xmpp:delay') || stanza.getChild('x', 'jabber:x:delay');
+        if (delay) {
+          log?.debug?.(`[${accountId}] XMPP skipping history message (has delay element)`);
+          return;
+        }
+
+        // If this is our own message (carbon copy), capture the server-assigned stanza-id
+        // This is needed for reactions - users react to the server's ID of our sent messages
+        if (isOurOwnMessage) {
+          const stanzaIdEl = stanza.getChild('stanza-id', 'urn:xmpp:sid:0');
+          const serverMsgId = stanzaIdEl?.attrs?.id;
+          const clientMsgId = stanza.attrs.id;
+
+          if (serverMsgId && clientMsgId) {
+            // Store mapping: server-side ID -> for later lookup
+            // This helps us understand what users are reacting to
+            const mapKey = `${accountId}:sent:${serverMsgId}`;
+            sentMessageIds.set(mapKey, clientMsgId);
+            log?.debug?.(
+              `[${accountId}] Stored sent message mapping: server=${serverMsgId} -> client=${clientMsgId}`
+            );
+
+            // Also store the reverse mapping: client ID -> server ID
+            const reverseKey = `${accountId}:${clientMsgId}`;
+            sentMessageIds.set(reverseKey, serverMsgId);
+            log?.debug?.(
+              `[${accountId}] Stored reverse mapping: client=${clientMsgId} -> server=${serverMsgId}`
+            );
+
+            // Schedule cleanup after 5 minutes
+            setTimeout(
+              () => {
+                sentMessageIds.delete(mapKey);
+                sentMessageIds.delete(reverseKey);
+              },
+              5 * 60 * 1000
+            );
+          }
+
+          // Skip processing our own messages - they're just carbon copies
+          log?.debug?.(`[${accountId}] XMPP skipping our own message (carbon copy)`);
+          return;
+        }
+
+        // This baseline does not consume end-to-end encrypted content. Ignore the
+        // whole stanza instead of treating an encryption fallback body as a user
+        // request.
+        if (hasUnsupportedEncryptedPayload(stanza)) {
+          log?.debug?.(`[${accountId}] Ignoring unsupported encrypted message`);
+          return;
+        }
+
+        const body = stanza.getChildText('body');
+        log?.debug?.(
+          `[${accountId}] XMPP message stanza: body=${body ? `"${body.slice(0, 50)}"` : 'null'}`
+        );
+
+        // XEP-0444: Detect incoming reactions (reactions have no body)
+        const reactionsEl = stanza.getChild('reactions', 'urn:xmpp:reactions:0');
+        if (reactionsEl) {
+          const reactedMsgId = reactionsEl.attrs.id;
+          const reactionChildren = reactionsEl.getChildren('reaction');
+          const emojis = reactionChildren.map((r) => r.text?.() ?? '').filter(Boolean);
+          const senderBare = bareJid(from);
+
+          // Determine if this is a groupchat or direct message
+          const roomJid = isGroupchat ? bareJid(from) : undefined;
+          const senderNick = isGroupchat ? from.split('/')[1] : undefined;
+
+          if (emojis.length > 0) {
+            log?.info?.(
+              `[${accountId}] XEP-0444 reaction from ${senderBare}: ${emojis.join(', ')} on message ${reactedMsgId}`
+            );
+          } else {
+            log?.info?.(
+              `[${accountId}] XEP-0444 reaction removed by ${senderBare} on message ${reactedMsgId}`
+            );
+          }
+
+          log?.info?.(`[${accountId}] XEP-0444 Routing reaction to OpenClaw...`);
+
+          // Route reaction to OpenClaw so the AI can see and process it
+          await handleInboundReaction({
+            reactedMessageId: reactedMsgId || '',
+            emojis,
+            senderBare,
+            senderFull: from,
+            isGroup: isGroupchat,
+            roomJid,
+            senderNick,
+            cfg,
+            accountId,
+            config,
+            log,
+            setStatus,
+          });
+
+          log?.info?.(`[${accountId}] XEP-0444 Reaction routing completed`);
+
+          // Reactions don't have a body — skip normal message processing
+          return;
+        }
+
+        // XEP-0066 is retained only as unprivileged text metadata. The URL is
+        // surfaced to the model but is never fetched by this plugin.
+        const oobElement = stanza.getChild('x', 'jabber:x:oob');
+        const oobUrl = oobElement?.getChildText('url') || undefined;
+        const oobDesc = oobElement?.getChildText('desc') || undefined;
+        if (oobUrl) {
           log?.debug?.(
-            `[${accountId}] Stored sent message mapping: server=${serverMsgId} -> client=${clientMsgId}`
-          );
-
-          // Also store the reverse mapping: client ID -> server ID
-          const reverseKey = `${accountId}:${clientMsgId}`;
-          sentMessageIds.set(reverseKey, serverMsgId);
-          log?.debug?.(
-            `[${accountId}] Stored reverse mapping: client=${clientMsgId} -> server=${serverMsgId}`
-          );
-
-          // Schedule cleanup after 5 minutes
-          setTimeout(
-            () => {
-              sentMessageIds.delete(mapKey);
-              sentMessageIds.delete(reverseKey);
-            },
-            5 * 60 * 1000
+            `[${accountId}] XEP-0066 inbound URL: ${oobUrl}${oobDesc ? ` (${oobDesc})` : ''}`
           );
         }
 
-        // Skip processing our own messages - they're just carbon copies
-        log?.debug?.(`[${accountId}] XMPP skipping our own message (carbon copy)`);
-        return;
-      }
+        if (!body && !oobUrl) {
+          return;
+        }
+        const textBody = body ?? '';
 
-      // This baseline does not consume end-to-end encrypted content. Ignore the
-      // whole stanza instead of treating an encryption fallback body as a user
-      // request.
-      if (hasUnsupportedEncryptedPayload(stanza)) {
-        log?.debug?.(`[${accountId}] Ignoring unsupported encrypted message`);
-        return;
-      }
+        // History was checked before body parsing.
 
-      const body = stanza.getChildText('body');
-      log?.debug?.(
-        `[${accountId}] XMPP message stanza: body=${body ? `"${body.slice(0, 50)}"` : 'null'}`
-      );
+        const to = stanza.attrs.to;
+        const id = stanza.attrs.id || `msg_${Date.now()}`;
 
-      // XEP-0444: Detect incoming reactions (reactions have no body)
-      const reactionsEl = stanza.getChild('reactions', 'urn:xmpp:reactions:0');
-      if (reactionsEl) {
-        const reactedMsgId = reactionsEl.attrs.id;
-        const reactionChildren = reactionsEl.getChildren('reaction');
-        const emojis = reactionChildren.map((r) => r.text?.() ?? '').filter(Boolean);
-        const senderBare = bareJid(from);
+        const senderJid = from;
+        let roomJid: string | undefined;
+        let senderNick: string | undefined;
 
-        // Determine if this is a groupchat or direct message
-        const roomJid = isGroupchat ? bareJid(from) : undefined;
-        const senderNick = isGroupchat ? from.split('/')[1] : undefined;
-
-        if (emojis.length > 0) {
-          log?.info?.(
-            `[${accountId}] XEP-0444 reaction from ${senderBare}: ${emojis.join(', ')} on message ${reactedMsgId}`
-          );
-        } else {
-          log?.info?.(
-            `[${accountId}] XEP-0444 reaction removed by ${senderBare} on message ${reactedMsgId}`
-          );
+        if (isGroupchat) {
+          roomJid = bareJid(from);
+          senderNick = from.split('/')[1];
+          // Self-message check already ran above.
         }
 
-        log?.info?.(`[${accountId}] XEP-0444 Routing reaction to OpenClaw...`);
+        log?.info?.(`[${accountId}] XMPP inbound message: from=${from} type=${type}`);
 
-        // Route reaction to OpenClaw so the AI can see and process it
-        await handleInboundReaction({
-          reactedMessageId: reactedMsgId || '',
-          emojis,
-          senderBare,
-          senderFull: from,
+        // XEP-0461: Parse reply context
+        let replyToId: string | undefined;
+        let replyToBody: string | undefined;
+
+        const replyElement = stanza.getChild('reply', 'urn:xmpp:reply:0');
+        if (replyElement) {
+          replyToId = replyElement.attrs.id;
+          log?.debug?.(`[${accountId}] XEP-0461 reply to message: ${replyToId}`);
+
+          const fallbackElement = stanza.getChild('fallback', 'urn:xmpp:fallback:0');
+          if (fallbackElement && textBody) {
+            const lines = textBody.split('\n');
+            const quotedLines: string[] = [];
+            for (const line of lines) {
+              if (line.startsWith('>')) {
+                quotedLines.push(line.slice(1).trim());
+              } else {
+                break;
+              }
+            }
+            if (quotedLines.length > 0) {
+              replyToBody = quotedLines.join('\n');
+            }
+          }
+        }
+
+        const message: XmppInboundMessage = {
+          id,
+          from: senderJid,
+          to,
+          body: textBody,
+          type: type as XmppInboundMessage['type'],
+          timestamp: Date.now(),
           isGroup: isGroupchat,
           roomJid,
           senderNick,
-          cfg,
-          accountId,
-          config,
-          log,
-          setStatus,
-        });
-
-        log?.info?.(`[${accountId}] XEP-0444 Reaction routing completed`);
-
-        // Reactions don't have a body — skip normal message processing
-        return;
-      }
-
-      // XEP-0066 is retained only as unprivileged text metadata. The URL is
-      // surfaced to the model but is never fetched by this plugin.
-      const oobElement = stanza.getChild('x', 'jabber:x:oob');
-      const oobUrl = oobElement?.getChildText('url') || undefined;
-      const oobDesc = oobElement?.getChildText('desc') || undefined;
-      if (oobUrl) {
-        log?.debug?.(
-          `[${accountId}] XEP-0066 inbound URL: ${oobUrl}${oobDesc ? ` (${oobDesc})` : ''}`
-        );
-      }
-
-      if (!body && !oobUrl) {
-        return;
-      }
-      const textBody = body ?? '';
-
-      // History was checked before body parsing.
-
-      const to = stanza.attrs.to;
-      const id = stanza.attrs.id || `msg_${Date.now()}`;
-
-      const senderJid = from;
-      let roomJid: string | undefined;
-      let senderNick: string | undefined;
-
-      if (isGroupchat) {
-        roomJid = bareJid(from);
-        senderNick = from.split('/')[1];
-        // Self-message check already ran above.
-      }
-
-      log?.info?.(`[${accountId}] XMPP inbound message: from=${from} type=${type}`);
-
-      // XEP-0461: Parse reply context
-      let replyToId: string | undefined;
-      let replyToBody: string | undefined;
-
-      const replyElement = stanza.getChild('reply', 'urn:xmpp:reply:0');
-      if (replyElement) {
-        replyToId = replyElement.attrs.id;
-        log?.debug?.(`[${accountId}] XEP-0461 reply to message: ${replyToId}`);
-
-        const fallbackElement = stanza.getChild('fallback', 'urn:xmpp:fallback:0');
-        if (fallbackElement && textBody) {
-          const lines = textBody.split('\n');
-          const quotedLines: string[] = [];
-          for (const line of lines) {
-            if (line.startsWith('>')) {
-              quotedLines.push(line.slice(1).trim());
-            } else {
-              break;
-            }
-          }
-          if (quotedLines.length > 0) {
-            replyToBody = quotedLines.join('\n');
-          }
-        }
-      }
-
-      const message: XmppInboundMessage = {
-        id,
-        from: senderJid,
-        to,
-        body: textBody,
-        type: type as XmppInboundMessage['type'],
-        timestamp: Date.now(),
-        isGroup: isGroupchat,
-        roomJid,
-        senderNick,
-        replyToId,
-        replyToBody,
-        oobUrl,
-        oobDesc,
-        // XEP-0359: Capture server-assigned stanza-id (preferred for reactions/references)
-        // For MUC: MUST use stanza-id with 'by' attribute matching room JID (per XEP-0444)
-        // For DMs: Use stanza-id or fall back to stanza's 'id' attribute
-        stanzaId: (() => {
-          const stanzaIdEl = stanza.getChild('stanza-id', 'urn:xmpp:sid:0');
-          if (stanzaIdEl?.attrs?.id) {
-            // For MUC, verify the 'by' attribute matches the room JID
-            if (isGroupchat && roomJid) {
-              const byAttr = stanzaIdEl.attrs.by;
-              if (byAttr && bareJid(byAttr) === bareJid(roomJid)) {
-                return stanzaIdEl.attrs.id;
+          replyToId,
+          replyToBody,
+          oobUrl,
+          oobDesc,
+          // XEP-0359: Capture server-assigned stanza-id (preferred for reactions/references)
+          // For MUC: MUST use stanza-id with 'by' attribute matching room JID (per XEP-0444)
+          // For DMs: Use stanza-id or fall back to stanza's 'id' attribute
+          stanzaId: (() => {
+            const stanzaIdEl = stanza.getChild('stanza-id', 'urn:xmpp:sid:0');
+            if (stanzaIdEl?.attrs?.id) {
+              // For MUC, verify the 'by' attribute matches the room JID
+              if (isGroupchat && roomJid) {
+                const byAttr = stanzaIdEl.attrs.by;
+                if (byAttr && bareJid(byAttr) === bareJid(roomJid)) {
+                  return stanzaIdEl.attrs.id;
+                }
+                return undefined;
               }
-              return undefined;
+              return stanzaIdEl.attrs.id;
             }
-            return stanzaIdEl.attrs.id;
-          }
-          return stanza.attrs.id || undefined;
-        })(),
-        // Raw stanza 'id' attribute (some clients like Gajim use this directly)
-        rawStanzaId: stanza.attrs.id,
-        // XEP-0359 <origin-id>: the SENDER's stable id. For a 1:1 chat this is the
-        // id XEP-0444 says a reaction must target — Conversations indexes its own
-        // sent messages by origin-id, not by the recipient-server stanza-id.
-        originId: stanza.getChild('origin-id', 'urn:xmpp:sid:0')?.attrs?.id || undefined,
-      };
+            return stanza.attrs.id || undefined;
+          })(),
+          // Raw stanza 'id' attribute (some clients like Gajim use this directly)
+          rawStanzaId: stanza.attrs.id,
+          // XEP-0359 <origin-id>: the SENDER's stable id. For a 1:1 chat this is the
+          // id XEP-0444 says a reaction must target — Conversations indexes its own
+          // sent messages by origin-id, not by the recipient-server stanza-id.
+          originId: stanza.getChild('origin-id', 'urn:xmpp:sid:0')?.attrs?.id || undefined,
+        };
 
-      await handleInboundMessage(message, cfg, accountId, config, log, setStatus);
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      log?.error?.(`[${accountId}] Failed to process inbound XMPP stanza: ${error}`);
-      setStatus?.({ accountId, lastError: error });
-    }
+        await handleInboundMessage(message, cfg, accountId, config, log, setStatus);
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log?.error?.(`[${accountId}] Failed to process inbound XMPP stanza: ${error}`);
+        setStatus?.({ accountId, lastError: error });
+      }
+    })().catch((err) => {
+      try {
+        log?.error?.(
+          `[${accountId}] Inbound XMPP stanza task failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } catch {
+        // Contain terminal reporting failures without retrying or rethrowing.
+      }
+    });
   });
 }

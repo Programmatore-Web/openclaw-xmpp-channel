@@ -24,23 +24,33 @@ export function startKeepalive(
     clearInterval(existing);
   }
 
-  const interval = setInterval(async () => {
-    try {
-      // XEP-0199: Send IQ ping to server
-      const pingId = `ping-${Date.now()}`;
-      const ping = xml(
-        'iq',
-        { type: 'get', to: server, id: pingId },
-        xml('ping', { xmlns: 'urn:xmpp:ping' })
-      );
+  const interval = setInterval((): void => {
+    void (async () => {
+      try {
+        // XEP-0199: Send IQ ping to server
+        const pingId = `ping-${Date.now()}`;
+        const ping = xml(
+          'iq',
+          { type: 'get', to: server, id: pingId },
+          xml('ping', { xmlns: 'urn:xmpp:ping' })
+        );
 
-      await xmpp.send(ping);
-      log?.debug?.(`[${accountId}] XEP-0199 keepalive ping sent`);
-    } catch (err) {
-      log?.warn?.(
-        `[${accountId}] Keepalive ping failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+        await xmpp.send(ping);
+        log?.debug?.(`[${accountId}] XEP-0199 keepalive ping sent`);
+      } catch (err) {
+        log?.warn?.(
+          `[${accountId}] Keepalive ping failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    })().catch((err) => {
+      try {
+        log?.warn?.(
+          `[${accountId}] Keepalive task failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } catch {
+        // Contain terminal reporting failures without retrying or rethrowing.
+      }
+    });
   }, KEEPALIVE_INTERVAL_MS);
 
   keepaliveIntervals.set(accountId, interval);

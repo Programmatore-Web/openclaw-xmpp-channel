@@ -3,7 +3,7 @@ import type { Element, XmppClient } from '@xmpp/client';
 import type { OpenClawConfig, PluginRuntime } from 'openclaw/plugin-sdk/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { setupMessageHandler } from '../src/monitor.js';
-import { setXmppRuntime } from '../src/runtime.js';
+import * as runtimeModule from '../src/runtime.js';
 import { cleanupAccountState } from '../src/state.js';
 import type { XmppConfig } from '../src/types.js';
 
@@ -44,20 +44,25 @@ function createHandlerHarness() {
       },
     },
   } as unknown as PluginRuntime;
-  setXmppRuntime(runtime);
+  vi.spyOn(runtimeModule, 'getXmppRuntime').mockReturnValue(runtime);
 
-  let stanzaHandler: ((stanza: Element) => Promise<void>) | undefined;
+  let stanzaHandler: ((stanza: Element) => void) | undefined;
   const xmpp = {
     on: vi.fn((event: string, handler: (stanza: Element) => void) => {
       if (event === 'stanza') {
-        stanzaHandler = handler as unknown as (stanza: Element) => Promise<void>;
+        stanzaHandler = handler;
       }
     }),
   } as unknown as XmppClient;
   setupMessageHandler(xmpp, accountId, 'bot', cfg, config);
   if (!stanzaHandler) throw new Error('stanza handler was not registered');
 
-  return { stanzaHandler, resolveAgentRoute, recordInboundSession, dispatchReplyWithBufferedBlockDispatcher };
+  return {
+    stanzaHandler,
+    resolveAgentRoute,
+    recordInboundSession,
+    dispatchReplyWithBufferedBlockDispatcher,
+  };
 }
 
 function message(...children: Element[]): Element {
@@ -73,31 +78,47 @@ function message(...children: Element[]): Element {
   );
 }
 
-beforeEach(() => cleanupAccountState(accountId));
-afterEach(() => cleanupAccountState(accountId));
+beforeEach(() => {
+  vi.useFakeTimers();
+  cleanupAccountState(accountId);
+});
+afterEach(() => {
+  cleanupAccountState(accountId);
+  try {
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.clearAllTimers();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  }
+});
 
 describe('unsupported encrypted stanza filtering', () => {
-  it('ignores a stanza carrying EME before routing its fallback body', async () => {
+  it('ignores a stanza carrying EME before routing its fallback body', () => {
     const harness = createHandlerHarness();
-    await harness.stanzaHandler(
-      message(
-        xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: 'urn:example:e2ee' }),
-        xml('body', {}, 'unsupported encrypted fallback')
+    expect(
+      harness.stanzaHandler(
+        message(
+          xml('encryption', { xmlns: 'urn:xmpp:eme:0', namespace: 'urn:example:e2ee' }),
+          xml('body', {}, 'unsupported encrypted fallback')
+        )
       )
-    );
+    ).toBeUndefined();
     expect(harness.resolveAgentRoute).not.toHaveBeenCalled();
     expect(harness.recordInboundSession).not.toHaveBeenCalled();
     expect(harness.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
   });
 
-  it('ignores any top-level encrypted element even without EME', async () => {
+  it('ignores any top-level encrypted element even without EME', () => {
     const harness = createHandlerHarness();
-    await harness.stanzaHandler(
-      message(
-        xml('encrypted', { xmlns: 'urn:example:unsupported-e2ee' }),
-        xml('body', {}, 'unsupported encrypted fallback')
+    expect(
+      harness.stanzaHandler(
+        message(
+          xml('encrypted', { xmlns: 'urn:example:unsupported-e2ee' }),
+          xml('body', {}, 'unsupported encrypted fallback')
+        )
       )
-    );
+    ).toBeUndefined();
     expect(harness.resolveAgentRoute).not.toHaveBeenCalled();
     expect(harness.recordInboundSession).not.toHaveBeenCalled();
     expect(harness.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
@@ -105,7 +126,8 @@ describe('unsupported encrypted stanza filtering', () => {
 
   it('processes an ordinary plaintext body', async () => {
     const harness = createHandlerHarness();
-    await harness.stanzaHandler(message(xml('body', {}, 'ordinary plaintext')));
+    expect(harness.stanzaHandler(message(xml('body', {}, 'ordinary plaintext')))).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(0);
     expect(harness.resolveAgentRoute).toHaveBeenCalledOnce();
     expect(harness.recordInboundSession).toHaveBeenCalledOnce();
     expect(harness.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledOnce();
