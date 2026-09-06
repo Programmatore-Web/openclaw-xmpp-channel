@@ -112,11 +112,13 @@ export function setupPresenceHandlers(
  */
 function handlePresenceError(stanza: Element, accountId: string, from: string, log?: Logger): void {
   const errorEl = stanza.getChild('error');
-  const errorType = errorEl?.attrs?.type || 'unknown';
+  const rawErrorType = errorEl?.attrs?.type;
+  const errorType = (rawErrorType === '' ? undefined : rawErrorType) ?? 'unknown';
   // Get the first child element that isn't "text" as the error condition
-  const errorCondition =
-    errorEl?.children?.filter((c): c is Element => typeof c !== 'string' && c.name !== 'text')?.[0]
-      ?.name || 'unknown';
+  const conditionName = errorEl?.children?.filter(
+    (c): c is Element => typeof c !== 'string' && c.name !== 'text'
+  )?.[0]?.name;
+  const errorCondition = (conditionName === '' ? undefined : conditionName) ?? 'unknown';
   const errorText = errorEl?.getChildText('text') ?? '';
 
   const roomJid = bareJid(from);

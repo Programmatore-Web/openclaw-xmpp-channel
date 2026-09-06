@@ -110,12 +110,14 @@ async function handleReaction(params: {
     account.config.groups?.some((room) => bareJid(room).toLowerCase() === normalizedTarget) ??
     false;
   const referencedId = getServerMessageId(account.accountId, params.messageId, target);
+  const emoji = params.emoji;
+  const effectiveEmoji = (emoji === '' ? undefined : emoji) ?? '👍';
   const reactions = params.remove
     ? xml('reactions', { id: referencedId, xmlns: 'urn:xmpp:reactions:0' })
     : xml(
         'reactions',
         { id: referencedId, xmlns: 'urn:xmpp:reactions:0' },
-        xml('reaction', {}, params.emoji || '👍')
+        xml('reaction', {}, effectiveEmoji)
       );
 
   try {
@@ -132,7 +134,7 @@ async function handleReaction(params: {
       )
     );
     return jsonResult(
-      params.remove ? { ok: true, removed: true } : { ok: true, added: params.emoji || '👍' }
+      params.remove ? { ok: true, removed: true } : { ok: true, added: effectiveEmoji }
     );
   } catch (err) {
     return jsonResult({

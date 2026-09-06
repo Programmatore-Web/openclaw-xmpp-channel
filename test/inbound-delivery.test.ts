@@ -80,6 +80,20 @@ afterEach(async () => {
 describe('inbound ID producer/consumer invariants', () => {
   const room = 'room@conference.example.com';
 
+  it('retains the final DM stanza ID fallback when raw and message IDs are empty', async () => {
+    const { dispatch } = createDeliveryHarness();
+
+    await handleInboundMessage(
+      { ...message, rawStanzaId: '', id: '', stanzaId: 'terminal-id' },
+      cfg,
+      accountId,
+      config
+    );
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(getRecentInboundMessageId(accountId, 'user@example.com')).toBe('terminal-id');
+  });
+
   it.each([
     {
       name: 'prefers the normalized group stanza ID over the message ID',
@@ -169,6 +183,112 @@ describe('inbound ID producer/consumer invariants', () => {
     );
     expect(vi.getTimerCount()).toBe(0);
   });
+});
+
+describe.each(['message', 'reaction'] as const)('inbound %s sender name fallbacks', (kind) => {
+  it.each([
+    { name: 'absent', senderNick: undefined, expected: 'room' },
+    { name: 'empty', senderNick: '', expected: 'room' },
+    { name: 'explicit', senderNick: 'guest', expected: 'guest' },
+    { name: 'padded', senderNick: ' guest ', expected: ' guest ' },
+  ])(
+    'preserves the $name nick without changing identity or access',
+    async ({ senderNick, expected }) => {
+      const { dispatch, recordInboundSession } = createDeliveryHarness();
+      const room = 'room@conference.example.com';
+      const from = `${room}/${senderNick ?? ''}`;
+      const accountConfig: XmppConfig = { ...config, groupPolicy: 'open', groups: [room] };
+      const accountCfg: OpenClawConfig = { channels: { xmpp: accountConfig } };
+
+      if (kind === 'message') {
+        await handleInboundMessage(
+          { ...message, from, type: 'groupchat', isGroup: true, roomJid: room, senderNick },
+          accountCfg,
+          accountId,
+          accountConfig
+        );
+      } else {
+        await handleInboundReaction({
+          reactedMessageId: 'message-1',
+          emojis: ['👍'],
+          senderBare: room,
+          senderFull: from,
+          isGroup: true,
+          roomJid: room,
+          senderNick,
+          cfg: accountCfg,
+          accountId,
+          config: accountConfig,
+        });
+      }
+
+      expect(recordInboundSession).toHaveBeenCalledOnce();
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(dispatch.mock.calls[0][0].ctx).toMatchObject({
+        SenderName: expected,
+        SenderId: from,
+        From: `xmpp:${from}`,
+        CommandAuthorized: false,
+        InboundAccessAuthorized: true,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+});
+
+describe('debounced reply text fallbacks', () => {
+  it.each([
+    {
+      name: 'markdown priority',
+      markdown: '**reply**',
+      text: 'plain',
+      expected: '**reply**',
+      textReads: 0,
+    },
+    { name: 'empty markdown', markdown: '', text: 'plain', expected: 'plain', textReads: 1 },
+    {
+      name: 'absent markdown',
+      markdown: undefined,
+      text: 'plain',
+      expected: 'plain',
+      textReads: 1,
+    },
+    { name: 'both absent', markdown: undefined, text: undefined, expected: '', textReads: 1 },
+    { name: 'both empty', markdown: '', text: '', expected: '', textReads: 1 },
+  ])(
+    'preserves $name with single reads and lazy text selection',
+    async ({ markdown, text, expected, textReads }) => {
+      const { send, dispatch } = createDeliveryHarness();
+      const readMarkdown = vi.fn(() => markdown);
+      const readText = vi.fn(() => text);
+      dispatch.mockImplementationOnce(async ({ dispatcherOptions: { deliver } }) => {
+        const payload = {
+          get markdown() {
+            return readMarkdown();
+          },
+          get text() {
+            return readText();
+          },
+        };
+        await deliver(payload, { kind: 'final' });
+        return { queuedFinal: true };
+      });
+
+      await handleInboundMessage(message, cfg, accountId, config);
+      expect(readMarkdown).toHaveBeenCalledOnce();
+      expect(readText).toHaveBeenCalledTimes(textReads);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const replies = send.mock.calls
+        .map(([stanza]) => stanza)
+        .filter((stanza) => stanza.getChild('body'));
+      expect(replies).toHaveLength(expected === '' ? 0 : 1);
+      if (expected !== '') {
+        expect(replies[0].getChildText('body')).toBe(`> hello\n>\n${expected}`);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
 });
 
 describe('inbound delivery Promise contracts', () => {

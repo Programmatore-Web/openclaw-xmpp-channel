@@ -493,8 +493,10 @@ export function setupMessageHandler(
         // XEP-0066 is retained only as unprivileged text metadata. The URL is
         // surfaced to the model but is never fetched by this plugin.
         const oobElement = stanza.getChild('x', 'jabber:x:oob');
-        const oobUrl = oobElement?.getChildText('url') || undefined;
-        const oobDesc = oobElement?.getChildText('desc') || undefined;
+        const oobUrlText = oobElement?.getChildText('url');
+        const oobUrl = oobUrlText === '' ? undefined : (oobUrlText ?? undefined);
+        const oobDescText = oobElement?.getChildText('desc');
+        const oobDesc = oobDescText === '' ? undefined : (oobDescText ?? undefined);
         if (oobUrl) {
           log?.debug?.(
             `[${accountId}] XEP-0066 inbound URL: ${oobUrl}${oobDesc ? ` (${oobDesc})` : ''}`
@@ -586,7 +588,10 @@ export function setupMessageHandler(
           // XEP-0359 <origin-id>: the SENDER's stable id. For a 1:1 chat this is the
           // id XEP-0444 says a reaction must target — Conversations indexes its own
           // sent messages by origin-id, not by the recipient-server stanza-id.
-          originId: stanza.getChild('origin-id', 'urn:xmpp:sid:0')?.attrs?.id || undefined,
+          originId: (() => {
+            const originId = stanza.getChild('origin-id', 'urn:xmpp:sid:0')?.attrs?.id;
+            return originId === '' ? undefined : originId;
+          })(),
         };
 
         await handleInboundMessage(message, cfg, accountId, config, log, setStatus);

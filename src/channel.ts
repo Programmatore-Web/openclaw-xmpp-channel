@@ -193,14 +193,17 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       Boolean(account.config?.jid && account.config?.password),
     unconfiguredReason: (): string => 'not configured',
 
-    describeAccount: (account: ResolvedXmppAccount): XmppAccountDescriptor => ({
-      accountId: account.accountId,
-      name: account.config?.name || 'XMPP',
-      enabled: account.enabled,
-      configured: Boolean(account.config?.jid),
-      dmPolicy: account.config?.dmPolicy,
-      allowFrom: account.config?.allowFrom,
-    }),
+    describeAccount: (account: ResolvedXmppAccount): XmppAccountDescriptor => {
+      const name = account.config?.name;
+      return {
+        accountId: account.accountId,
+        name: (name === '' ? undefined : name) ?? 'XMPP',
+        enabled: account.enabled,
+        configured: Boolean(account.config?.jid),
+        dmPolicy: account.config?.dmPolicy,
+        allowFrom: account.config?.allowFrom,
+      };
+    },
 
     resolveAllowFrom: ({ cfg, accountId }: { cfg: OpenClawConfig; accountId?: string | null }) =>
       resolveXmppAccount({ cfg, accountId }).config?.allowFrom ?? [],

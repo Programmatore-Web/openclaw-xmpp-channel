@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { joinMuc } from '../src/rooms.js';
 import { setupPresenceHandlers } from '../src/stanza-handlers.js';
 import { getMucOccupantRealJid } from '../src/muc-identity.js';
-import { cleanupAccountState, joinedRooms, pendingMucJoins } from '../src/state.js';
+import { cleanupAccountState, goneRooms, joinedRooms, pendingMucJoins } from '../src/state.js';
 import type { Logger } from '../src/types.js';
 
 const accountId = 'rooms-test';
@@ -174,10 +174,121 @@ describe('presence listener rejection ownership', () => {
       send,
     } as unknown as ReturnType<typeof client>;
     const warn = vi.fn();
-    setupPresenceHandlers(xmpp, accountId, { warn });
+    const error = vi.fn();
+    setupPresenceHandlers(xmpp, accountId, { warn, error });
     if (!listener) throw new Error('presence listener was not registered');
-    return { listener, send, warn };
+    return { listener, send, warn, error };
   }
+
+  it.each([
+    {
+      name: 'missing error element',
+      present: false,
+      type: undefined,
+      condition: undefined,
+      expectedType: 'unknown',
+      expectedCondition: 'unknown',
+    },
+    {
+      name: 'missing type and condition',
+      present: true,
+      type: undefined,
+      condition: undefined,
+      expectedType: 'unknown',
+      expectedCondition: 'unknown',
+    },
+    {
+      name: 'empty type',
+      present: true,
+      type: '',
+      condition: 'service-unavailable',
+      expectedType: 'unknown',
+      expectedCondition: 'service-unavailable',
+    },
+    {
+      name: 'empty condition',
+      present: true,
+      type: 'cancel',
+      condition: '',
+      expectedType: 'cancel',
+      expectedCondition: 'unknown',
+    },
+    {
+      name: 'padded fields',
+      present: true,
+      type: ' cancel ',
+      condition: ' service-unavailable ',
+      expectedType: ' cancel ',
+      expectedCondition: ' service-unavailable ',
+    },
+  ])(
+    'preserves $name in presence error reporting',
+    async ({ present, type, condition, expectedType, expectedCondition }) => {
+      const h = harness();
+      const stanza = xml('presence', { from: 'user@example.com/resource', type: 'error' });
+      if (present) {
+        stanza.append(
+          xml(
+            'error',
+            type === undefined ? {} : { type },
+            'ignored character data',
+            xml('text', {}, 'Details'),
+            ...(condition === undefined ? [] : [xml(condition, {})])
+          )
+        );
+      }
+
+      h.listener(stanza);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(h.warn).toHaveBeenCalledOnce();
+      expect(h.warn).toHaveBeenCalledWith(
+        `[${accountId}] XMPP presence error from user@example.com/resource: type=${expectedType} condition=${expectedCondition} text="${present ? 'Details' : ''}"`
+      );
+      expect(h.error).not.toHaveBeenCalled();
+      expect(h.send).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['conflict', 'gone', 'recipient-unavailable'])(
+    'retains the %s special case with an empty error type',
+    async (condition) => {
+      const h = harness();
+      const room = 'room@conference.example.com';
+      goneRooms.delete(room);
+      try {
+        h.listener(
+          xml(
+            'presence',
+            { from: `${room}/bot`, type: 'error' },
+            xml('error', { type: '' }, xml('text', {}, 'Details'), xml(condition, {}))
+          )
+        );
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(goneRooms.has(room)).toBe(condition === 'gone');
+        if (condition === 'conflict') {
+          expect(h.error).toHaveBeenCalledOnce();
+          expect(h.error).toHaveBeenCalledWith(
+            `[${accountId}] MUC nick conflict in ${room} - check if another instance is using the same nickname`
+          );
+        } else {
+          expect(h.error).not.toHaveBeenCalled();
+        }
+        if (condition === 'gone') {
+          expect(h.warn).toHaveBeenCalledOnce();
+          expect(h.warn).toHaveBeenCalledWith(
+            `[${accountId}] Configured room ${room} no longer exists`
+          );
+        } else {
+          expect(h.warn).not.toHaveBeenCalled();
+        }
+        expect(h.send).not.toHaveBeenCalled();
+      } finally {
+        goneRooms.delete(room);
+      }
+    }
+  );
 
   it.each([
     { name: 'missing', text: undefined, expectedText: '' },

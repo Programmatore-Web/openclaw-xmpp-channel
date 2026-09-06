@@ -3,6 +3,7 @@ import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveXmppAccount } from '../src/accounts.js';
 import { xmppPlugin } from '../src/channel.js';
+import { getXmppSelf } from '../src/directory.js';
 import { getActiveClient } from '../src/monitor.js';
 
 vi.mock('../src/monitor.js', () => ({
@@ -21,6 +22,44 @@ const client = { send } as unknown as XmppClient;
 beforeEach(() => {
   vi.mocked(getActiveClient).mockReset();
   send.mockClear();
+});
+
+describe('account and directory name fallbacks', () => {
+  it.each([
+    { label: 'absent', name: undefined, accountName: 'XMPP', selfName: 'XMPP Bot' },
+    { label: 'empty', name: '', accountName: 'XMPP', selfName: 'XMPP Bot' },
+    { label: 'configured', name: 'Work bot', accountName: 'Work bot', selfName: 'Work bot' },
+    { label: 'padded', name: ' Work bot ', accountName: ' Work bot ', selfName: ' Work bot ' },
+    { label: 'whitespace', name: ' ', accountName: ' ', selfName: ' ' },
+  ])('preserves $label names and account selection', async ({ name, accountName, selfName }) => {
+    const namedCfg: OpenClawConfig = {
+      channels: {
+        xmpp: {
+          jid: 'bot@example.com',
+          dmPolicy: 'open',
+          allowFrom: ['user@example.com'],
+          accounts: { work: { jid: 'user@example.com/desktop', name } },
+        },
+      },
+    };
+    const account = resolveXmppAccount({ cfg: namedCfg, accountId: 'work' });
+
+    expect(xmppPlugin.config.describeAccount!(account, namedCfg)).toEqual({
+      accountId: 'work',
+      name: accountName,
+      enabled: true,
+      configured: true,
+      dmPolicy: 'open',
+      allowFrom: ['user@example.com'],
+    });
+    await expect(getXmppSelf({ cfg: namedCfg, accountId: 'work' })).resolves.toEqual({
+      kind: 'user',
+      id: 'user@example.com',
+      name: selfName,
+      raw: { jid: 'user@example.com' },
+    });
+    expect(send).not.toHaveBeenCalled();
+  });
 });
 
 describe('mention strip patterns', () => {

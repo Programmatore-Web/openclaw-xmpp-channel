@@ -227,6 +227,7 @@ export async function handleInboundMessage(
   }
 
   const msgId = (message.stanzaId ?? message.id) || `xmpp-${Date.now()}`;
+  const senderNick = message.senderNick;
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: displayBody,
     RawBody: message.body,
@@ -237,7 +238,7 @@ export async function handleInboundMessage(
     AccountId: accountId,
     ChatType: message.isGroup ? 'group' : 'direct',
     ConversationLabel: message.isGroup ? message.roomJid : senderBare,
-    SenderName: message.senderNick || senderBare.split('@')[0],
+    SenderName: (senderNick === '' ? undefined : senderNick) ?? senderBare.split('@')[0],
     SenderId: senderIdentity,
     Provider: 'xmpp',
     Surface: 'xmpp',
@@ -251,9 +252,14 @@ export async function handleInboundMessage(
     InboundAccessAuthorized: true,
   });
 
-  const inboundMessageId = message.isGroup
-    ? (message.stanzaId ?? message.id)
-    : (message.originId ?? message.rawStanzaId) || message.id || message.stanzaId;
+  let inboundMessageId: string | undefined;
+  if (message.isGroup) {
+    inboundMessageId = message.stanzaId ?? message.id;
+  } else {
+    const originOrRawId = message.originId ?? message.rawStanzaId;
+    inboundMessageId =
+      (originOrRawId === '' ? undefined : originOrRawId) ?? (message.id || message.stanzaId);
+  }
   if (inboundMessageId) {
     recordInboundMessageId(
       accountId,
@@ -331,7 +337,8 @@ function debouncedDeliver(
   deliver: (combined: ReplyPayload) => Promise<void> | void,
   onError: (err: unknown) => void
 ): void {
-  const text = (payload.markdown || payload.text) ?? '';
+  const markdown = payload.markdown;
+  const text = (markdown === '' ? undefined : markdown) ?? payload.text ?? '';
   const pending = pendingDeliveries.get(key) ?? { texts: [], deliver, onError };
   if (text) {
     pending.texts.push(text);
@@ -455,6 +462,7 @@ export async function handleInboundReaction(params: {
     (params.cfg as { session?: { store?: string } }).session?.store,
     { agentId: route.agentId }
   );
+  const senderNick = params.senderNick;
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: reactionText,
     RawBody: reactionText,
@@ -465,7 +473,7 @@ export async function handleInboundReaction(params: {
     AccountId: params.accountId,
     ChatType: params.isGroup ? 'group' : 'direct',
     ConversationLabel: params.isGroup ? params.roomJid : params.senderBare,
-    SenderName: params.senderNick || params.senderBare.split('@')[0],
+    SenderName: (senderNick === '' ? undefined : senderNick) ?? params.senderBare.split('@')[0],
     SenderId: access.senderIdentity,
     Provider: 'xmpp',
     Surface: 'xmpp',

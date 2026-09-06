@@ -186,7 +186,8 @@ export function extractJidDomain(jid: string): string {
 
 /** Resolve the physical host used by the TCP service endpoint. */
 export function resolveConnectHost(config: { jid: string; server?: string }): string {
-  return config.server?.trim() || extractJidDomain(config.jid);
+  const server = config.server?.trim();
+  return (server === '' ? undefined : server) ?? extractJidDomain(config.jid);
 }
 
 /**
