@@ -2,8 +2,29 @@ import { describe, expect, it } from 'vitest';
 import {
   isSenderAllowed,
   normalizeAllowFrom,
+  normalizeXmppMessagingTarget,
   normalizeXmppRoomJid,
+  normalizeXmppTarget,
 } from '../src/normalize.js';
+
+describe('messaging target wrapper fallbacks', () => {
+  it.each([
+    {
+      name: 'valid',
+      target: 'xmpp:bot@example.com/resource',
+      normalized: 'bot@example.com',
+      expected: 'bot@example.com',
+    },
+    { name: 'rejected', target: 'not-a-jid', normalized: null, expected: undefined },
+    { name: 'currently empty', target: '/@example.com', normalized: '', expected: undefined },
+  ])(
+    'preserves the $name normalization result at the wrapper boundary',
+    ({ target, normalized, expected }) => {
+      expect(normalizeXmppTarget(target)).toBe(normalized);
+      expect(normalizeXmppMessagingTarget(target)).toBe(expected);
+    }
+  );
+});
 
 describe('XMPP allowlist normalization', () => {
   it('treats an undefined allowlist as deny-all', () => {

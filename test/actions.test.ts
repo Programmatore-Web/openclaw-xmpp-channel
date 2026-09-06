@@ -65,6 +65,31 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('reaction emoji fallbacks', () => {
+  it.each([
+    { name: 'absent', emoji: undefined, expected: '👍' },
+    { name: 'empty', emoji: '', expected: '👍' },
+    { name: 'explicit', emoji: '🎉', expected: '🎉' },
+    { name: 'padded', emoji: ' 🎉 ', expected: ' 🎉 ' },
+  ])('uses the same $name emoji in the stanza and result', async ({ emoji, expected }) => {
+    const result = await react({ chatJid: target, messageId: 'explicit-id', emoji });
+
+    expectReaction(target, 'explicit-id');
+    const reactions = send.mock.calls[0][0].getChild('reactions', 'urn:xmpp:reactions:0');
+    expect(reactions?.getChildText('reaction')).toBe(expected);
+    expect(result.details).toEqual({ ok: true, added: expected });
+  });
+
+  it.each([undefined, '', '🎉'])('keeps removal independent of emoji %j', async (emoji) => {
+    const result = await react({ chatJid: target, messageId: 'explicit-id', emoji, remove: true });
+
+    expectReaction(target, 'explicit-id');
+    const reactions = send.mock.calls[0][0].getChild('reactions', 'urn:xmpp:reactions:0');
+    expect(reactions?.children).toEqual([]);
+    expect(result.details).toEqual({ ok: true, removed: true });
+  });
+});
+
 describe('reaction action string inputs', () => {
   it.each(invalidCandidates)('rejects a $name target without a fallback', async ({ value }) => {
     const result = await react({ chatJid: value, messageId: 'explicit-id' });

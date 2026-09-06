@@ -156,7 +156,8 @@ export function normalizeXmppTarget(raw: string | null | undefined): string | nu
  * Normalize XMPP messaging target (for plugin interface)
  */
 export function normalizeXmppMessagingTarget(target: string): string | undefined {
-  return normalizeXmppTarget(target) || undefined;
+  const normalized = normalizeXmppTarget(target);
+  return normalized === '' ? undefined : (normalized ?? undefined);
 }
 
 /**

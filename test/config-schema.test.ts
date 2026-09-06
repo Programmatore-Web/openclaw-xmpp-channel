@@ -12,7 +12,23 @@ describe('XMPP domain and connection host', () => {
     expect(resolveConnectHost(config)).toBe('xmpp-edge.example.com');
   });
 
-  it('falls back to the JID domain for the connection host', () => {
-    expect(resolveConnectHost({ jid: 'bot@example.com' })).toBe('example.com');
+  it.each([undefined, '', ' \t '])('falls back to the JID domain for server %j', (server) => {
+    expect(resolveConnectHost({ jid: 'bot@example.com', server })).toBe('example.com');
+  });
+
+  it('reads and trims a padded server once without evaluating the JID fallback', () => {
+    let serverReads = 0;
+    const config = {
+      get server() {
+        serverReads += 1;
+        return ' xmpp.example.com ';
+      },
+      get jid(): string {
+        throw new Error('JID fallback must remain lazy');
+      },
+    };
+
+    expect(resolveConnectHost(config)).toBe('xmpp.example.com');
+    expect(serverReads).toBe(1);
   });
 });

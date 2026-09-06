@@ -25,10 +25,11 @@ export function getXmppSelf(params: {
       return;
     }
 
+    const name = account.config?.name;
     resolve({
       kind: 'user',
       id: bareJid(jid),
-      name: account.config?.name || 'XMPP Bot',
+      name: (name === '' ? undefined : name) ?? 'XMPP Bot',
       raw: { jid: bareJid(jid) },
     });
   });
