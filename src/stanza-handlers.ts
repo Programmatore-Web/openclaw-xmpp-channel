@@ -21,79 +21,89 @@ export function setupPresenceHandlers(
   accountId: string,
   log?: Logger
 ): void {
-  xmpp.on('stanza', async (stanza) => {
-    try {
-      if (!stanza.is('presence')) {
-        return;
-      }
+  xmpp.on('stanza', (stanza): void => {
+    void (async () => {
+      try {
+        if (!stanza.is('presence')) {
+          return;
+        }
 
-      const type = stanza.attrs.type;
-      const from = stanza.attrs.from;
+        const type = stanza.attrs.type;
+        const from = stanza.attrs.from;
 
-      if (!from) {
-        return;
-      }
+        if (!from) {
+          return;
+        }
 
-      const fromBare = bareJid(from);
+        const fromBare = bareJid(from);
 
-      // Capture real occupant JIDs when the room exposes them. Group allowlist
-      // checks fail closed when this identity cannot be verified.
-      trackMucOccupantIdentity(stanza, accountId, log);
+        // Capture real occupant JIDs when the room exposes them. Group allowlist
+        // checks fail closed when this identity cannot be verified.
+        trackMucOccupantIdentity(stanza, accountId, log);
 
-      // Check for MUC self-presence (status code 110) - indicates we've joined
-      // <presence from="room@conference.example.com/mynick"><x xmlns="...muc#user"><status code="110"/></x></presence>
-      const mucUserX = stanza.getChild('x', 'http://jabber.org/protocol/muc#user');
-      if (mucUserX && !type) {
-        const statuses = mucUserX.getChildren('status');
-        const isSelfPresence = statuses.some((s) => s.attrs.code === '110');
+        // Check for MUC self-presence (status code 110) - indicates we've joined
+        // <presence from="room@conference.example.com/mynick"><x xmlns="...muc#user"><status code="110"/></x></presence>
+        const mucUserX = stanza.getChild('x', 'http://jabber.org/protocol/muc#user');
+        if (mucUserX && !type) {
+          const statuses = mucUserX.getChildren('status');
+          const isSelfPresence = statuses.some((s) => s.attrs.code === '110');
 
-        if (isSelfPresence) {
-          const normalizedRoomJid = normalizeXmppRoomJid(fromBare);
-          if (!normalizedRoomJid) {
-            log?.warn?.(`[${accountId}] Ignoring MUC self-presence with invalid room JID`);
-            return;
-          }
-          const pendingKey = `${accountId}:${normalizedRoomJid}`;
-          const pending = pendingMucJoins.get(pendingKey);
-          if (pending) {
-            log?.debug?.(`[${accountId}] MUC self-presence received for ${fromBare}`);
-            clearTimeout(pending.timeout);
-            pending.resolve();
-            pendingMucJoins.delete(pendingKey);
+          if (isSelfPresence) {
+            const normalizedRoomJid = normalizeXmppRoomJid(fromBare);
+            if (!normalizedRoomJid) {
+              log?.warn?.(`[${accountId}] Ignoring MUC self-presence with invalid room JID`);
+              return;
+            }
+            const pendingKey = `${accountId}:${normalizedRoomJid}`;
+            const pending = pendingMucJoins.get(pendingKey);
+            if (pending) {
+              log?.debug?.(`[${accountId}] MUC self-presence received for ${fromBare}`);
+              clearTimeout(pending.timeout);
+              pending.resolve();
+              pendingMucJoins.delete(pendingKey);
+            }
           }
         }
-      }
 
-      // Presence subscriptions are never approved implicitly. Roster changes
-      // remain an explicit administrator operation outside this channel.
-      if (type === 'subscribe') {
-        log?.info?.(`[${accountId}] Ignoring unsolicited presence subscription from ${fromBare}`);
-        return;
-      }
+        // Presence subscriptions are never approved implicitly. Roster changes
+        // remain an explicit administrator operation outside this channel.
+        if (type === 'subscribe') {
+          log?.info?.(`[${accountId}] Ignoring unsolicited presence subscription from ${fromBare}`);
+          return;
+        }
 
-      // Handle probe - respond with current presence
-      if (type === 'probe') {
-        log?.debug?.(`[${accountId}] XMPP presence probe from ${fromBare} - responding`);
-        const presence = xml('presence', { to: fromBare });
-        await xmpp.send(presence);
-      }
+        // Handle probe - respond with current presence
+        if (type === 'probe') {
+          log?.debug?.(`[${accountId}] XMPP presence probe from ${fromBare} - responding`);
+          const presence = xml('presence', { to: fromBare });
+          await xmpp.send(presence);
+        }
 
-      // Handle unsubscribe - acknowledge it
-      if (type === 'unsubscribe') {
-        log?.info?.(`[${accountId}] XMPP presence unsubscribe from ${fromBare}`);
-        const unsubscribed = xml('presence', { to: fromBare, type: 'unsubscribed' });
-        await xmpp.send(unsubscribed);
-      }
+        // Handle unsubscribe - acknowledge it
+        if (type === 'unsubscribe') {
+          log?.info?.(`[${accountId}] XMPP presence unsubscribe from ${fromBare}`);
+          const unsubscribed = xml('presence', { to: fromBare, type: 'unsubscribed' });
+          await xmpp.send(unsubscribed);
+        }
 
-      // Handle presence errors (e.g., MUC join failures)
-      if (type === 'error') {
-        handlePresenceError(stanza, accountId, from, log);
+        // Handle presence errors (e.g., MUC join failures)
+        if (type === 'error') {
+          handlePresenceError(stanza, accountId, from, log);
+        }
+      } catch (err) {
+        log?.warn?.(
+          `[${accountId}] Failed to process XMPP presence: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
-    } catch (err) {
-      log?.warn?.(
-        `[${accountId}] Failed to process XMPP presence: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+    })().catch((err) => {
+      try {
+        log?.warn?.(
+          `[${accountId}] XMPP presence task failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } catch {
+        // Contain terminal reporting failures without retrying or rethrowing.
+      }
+    });
   });
 }
 

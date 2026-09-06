@@ -147,35 +147,45 @@ export function scheduleReconnect(accountId: string, ctx: GatewayStartContext, l
     reconnectNextAt: Date.now() + delay,
   });
 
-  state.timer = setTimeout(async () => {
-    const currentState = reconnectStates.get(accountId);
-    if (currentState !== state || currentState.aborted) {
-      log?.debug?.(`[${accountId}] Reconnect cancelled (aborted)`);
-      return;
-    }
-    state.timer = undefined;
-
-    log?.info?.(`[${accountId}] Attempting reconnect (attempt ${state.attempts})...`);
-
-    try {
-      // Stop the old client before dropping the reference. Deleting the map
-      // entry alone orphans the underlying @xmpp/client, which holds its TCP
-      // socket open -- so every reconnect attempt leaked one connection to the
-      // server. A server-side fault that keeps us reconnecting (e.g. STARTTLS
-      // failing) would then exhaust the server's file descriptors.
-      await stopStaleClient(accountId, log);
-
-      // Start a fresh connection
-      if (startXmppConnectionFn) {
-        await startXmppConnectionFn(ctx);
-      } else {
-        log?.error?.(`[${accountId}] startXmppConnection not registered for reconnect`);
+  state.timer = setTimeout((): void => {
+    void (async () => {
+      const currentState = reconnectStates.get(accountId);
+      if (currentState !== state || currentState.aborted) {
+        log?.debug?.(`[${accountId}] Reconnect cancelled (aborted)`);
+        return;
       }
-    } catch (err) {
-      log?.error?.(
-        `[${accountId}] Reconnect failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-      // Will trigger another reconnect via offline event
-    }
+      state.timer = undefined;
+
+      log?.info?.(`[${accountId}] Attempting reconnect (attempt ${state.attempts})...`);
+
+      try {
+        // Stop the old client before dropping the reference. Deleting the map
+        // entry alone orphans the underlying @xmpp/client, which holds its TCP
+        // socket open -- so every reconnect attempt leaked one connection to the
+        // server. A server-side fault that keeps us reconnecting (e.g. STARTTLS
+        // failing) would then exhaust the server's file descriptors.
+        await stopStaleClient(accountId, log);
+
+        // Start a fresh connection
+        if (startXmppConnectionFn) {
+          await startXmppConnectionFn(ctx);
+        } else {
+          log?.error?.(`[${accountId}] startXmppConnection not registered for reconnect`);
+        }
+      } catch (err) {
+        log?.error?.(
+          `[${accountId}] Reconnect failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        // Will trigger another reconnect via offline event
+      }
+    })().catch((err) => {
+      try {
+        log?.error?.(
+          `[${accountId}] Reconnect task failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } catch {
+        // Contain terminal reporting failures without retrying or rethrowing.
+      }
+    });
   }, delay);
 }
