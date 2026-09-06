@@ -117,7 +117,7 @@ function handlePresenceError(stanza: Element, accountId: string, from: string, l
   const errorCondition =
     errorEl?.children?.filter((c): c is Element => typeof c !== 'string' && c.name !== 'text')?.[0]
       ?.name || 'unknown';
-  const errorText = errorEl?.getChildText('text') || '';
+  const errorText = errorEl?.getChildText('text') ?? '';
 
   const roomJid = bareJid(from);
 

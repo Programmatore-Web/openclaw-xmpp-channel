@@ -1,9 +1,11 @@
+import { xml } from '@xmpp/client';
 import type { Element, XmppClient } from '@xmpp/client';
 import type { OpenClawConfig, PluginRuntime } from 'openclaw/plugin-sdk/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleInboundMessage, handleInboundReaction } from '../src/inbound.js';
+import { setupMessageHandler } from '../src/monitor.js';
 import { setXmppRuntime } from '../src/runtime.js';
-import { activeClients, cleanupAccountState } from '../src/state.js';
+import { activeClients, cleanupAccountState, getRecentInboundMessageId } from '../src/state.js';
 import type { XmppConfig, XmppInboundMessage } from '../src/types.js';
 
 type DispatchParams = Parameters<
@@ -73,6 +75,100 @@ afterEach(async () => {
     vi.clearAllTimers();
     vi.useRealTimers();
   }
+});
+
+describe('inbound ID producer/consumer invariants', () => {
+  const room = 'room@conference.example.com';
+
+  it.each([
+    {
+      name: 'prefers the normalized group stanza ID over the message ID',
+      isGroup: true,
+      expectedContextId: 'server-id',
+      expectedRecentId: 'server-id',
+    },
+    {
+      name: 'uses the group message ID when the producer rejects the stanza ID',
+      isGroup: true,
+      stanzaBy: 'other@conference.example.com',
+      expectedContextId: 'raw-id',
+      expectedRecentId: 'raw-id',
+    },
+    {
+      name: 'prefers the DM origin ID over the raw ID while retaining the context stanza ID',
+      isGroup: false,
+      originId: 'origin-id',
+      expectedContextId: 'server-id',
+      expectedRecentId: 'origin-id',
+    },
+    {
+      name: 'uses the DM raw ID when the origin ID is absent',
+      isGroup: false,
+      expectedContextId: 'server-id',
+      expectedRecentId: 'raw-id',
+    },
+    {
+      name: 'uses the DM raw ID after the producer normalizes an empty origin ID',
+      isGroup: false,
+      originId: '',
+      expectedContextId: 'server-id',
+      expectedRecentId: 'raw-id',
+    },
+    {
+      name: 'retains the generated message ID fallback for an empty DM raw ID',
+      isGroup: false,
+      rawId: '',
+      expectedContextId: 'server-id',
+      expectedRecentId: 'msg_1000',
+    },
+  ])('$name', async ({ isGroup, stanzaBy, originId, rawId, expectedContextId, expectedRecentId }) => {
+    vi.setSystemTime(1000);
+    const { dispatch, recordInboundSession } = createDeliveryHarness();
+    const accountConfig: XmppConfig = { ...config, groupPolicy: 'open', groups: [room] };
+    const accountCfg: OpenClawConfig = { channels: { xmpp: accountConfig } };
+    let listener: ((stanza: Element) => void) | undefined;
+    const xmpp = {
+      on: vi.fn((event: string, handler: (stanza: Element) => void) => {
+        if (event === 'stanza') listener = handler;
+      }),
+    } as unknown as XmppClient;
+    const log = { error: vi.fn() };
+    setupMessageHandler(xmpp, accountId, 'bot', accountCfg, accountConfig, log);
+    if (!listener) throw new Error('message listener was not registered');
+
+    const stanza = xml(
+      'message',
+      {
+        from: isGroup ? `${room}/user` : message.from,
+        to: config.jid,
+        type: isGroup ? 'groupchat' : 'chat',
+        id: rawId ?? 'raw-id',
+      },
+      xml('body', {}, 'hello'),
+      xml('stanza-id', {
+        xmlns: 'urn:xmpp:sid:0',
+        id: 'server-id',
+        by: stanzaBy ?? (isGroup ? room : 'example.com'),
+      }),
+      ...(originId === undefined ? [] : [xml('origin-id', { xmlns: 'urn:xmpp:sid:0', id: originId })])
+    );
+
+    expect(listener(stanza)).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(log.error).not.toHaveBeenCalled();
+    expect(recordInboundSession).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ctx: expect.objectContaining({ MessageSid: expectedContextId, messageId: expectedContextId }),
+      })
+    );
+    expect(getRecentInboundMessageId(accountId, isGroup ? room : 'user@example.com')).toBe(
+      expectedRecentId
+    );
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe('inbound delivery Promise contracts', () => {

@@ -333,7 +333,7 @@ registerStartXmppConnection(startXmppConnection);
 
 /** Detect unsupported application-layer encrypted message payloads. */
 export function hasUnsupportedEncryptedPayload(stanza: Element): boolean {
-  return Boolean(stanza.getChild('encryption', 'urn:xmpp:eme:0') || stanza.getChild('encrypted'));
+  return Boolean(stanza.getChild('encryption', 'urn:xmpp:eme:0') ?? stanza.getChild('encrypted'));
 }
 
 export function setupMessageHandler(
@@ -387,7 +387,7 @@ export function setupMessageHandler(
 
         // Ignore delayed history messages so a reconnect cannot replay old turns.
         const delay =
-          stanza.getChild('delay', 'urn:xmpp:delay') || stanza.getChild('x', 'jabber:x:delay');
+          stanza.getChild('delay', 'urn:xmpp:delay') ?? stanza.getChild('x', 'jabber:x:delay');
         if (delay) {
           log?.debug?.(`[${accountId}] XMPP skipping history message (has delay element)`);
           return;

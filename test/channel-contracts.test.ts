@@ -23,6 +23,21 @@ beforeEach(() => {
   send.mockClear();
 });
 
+describe('mention strip patterns', () => {
+  it.each([
+    { name: 'absent', ctx: {}, expected: [] },
+    { name: 'empty', ctx: { To: '' }, expected: [] },
+    { name: 'prefix-only', ctx: { To: 'xmpp:' }, expected: [] },
+    {
+      name: 'valid',
+      ctx: { To: 'xmpp:bot@example.com/resource' },
+      expected: [String.raw`bot@example\.com`, String.raw`@bot@example\.com`],
+    },
+  ])('preserves mention strip patterns for $name To', ({ ctx, expected }) => {
+    expect(xmppPlugin.mentions!.stripPatterns!({ ctx, cfg })).toEqual(expected);
+  });
+});
+
 describe('channel pairing and status Promise contracts', () => {
   it('resolves approval notification without sending or changing config', async () => {
     vi.mocked(getActiveClient).mockReturnValue(client);

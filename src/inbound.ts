@@ -226,7 +226,7 @@ export async function handleInboundMessage(
     displayBody = `${displayBody ? `${displayBody}\n` : ''}[Shared URL: ${message.oobUrl}${description}]`;
   }
 
-  const msgId = message.stanzaId || message.id || `xmpp-${Date.now()}`;
+  const msgId = (message.stanzaId ?? message.id) || `xmpp-${Date.now()}`;
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: displayBody,
     RawBody: message.body,
@@ -252,8 +252,8 @@ export async function handleInboundMessage(
   });
 
   const inboundMessageId = message.isGroup
-    ? message.stanzaId || message.id
-    : message.originId || message.rawStanzaId || message.id || message.stanzaId;
+    ? (message.stanzaId ?? message.id)
+    : (message.originId ?? message.rawStanzaId) || message.id || message.stanzaId;
   if (inboundMessageId) {
     recordInboundMessageId(
       accountId,
@@ -331,7 +331,7 @@ function debouncedDeliver(
   deliver: (combined: ReplyPayload) => Promise<void> | void,
   onError: (err: unknown) => void
 ): void {
-  const text = payload.markdown || payload.text || '';
+  const text = (payload.markdown || payload.text) ?? '';
   const pending = pendingDeliveries.get(key) ?? { texts: [], deliver, onError };
   if (text) {
     pending.texts.push(text);
@@ -367,7 +367,7 @@ async function deliverReply(
     return;
   }
 
-  const text = payload.markdown || payload.text;
+  const text = payload.markdown ?? payload.text;
   if (!text) {
     await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
     return;
