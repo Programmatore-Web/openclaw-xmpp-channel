@@ -380,6 +380,33 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
     // hits a recovered non-zero tool call is misclassified status=error.
     preferFinalAssistantVisibleText: true,
 
+    // Suppress exact internal control payloads that are not intended for user delivery.
+    normalizePayload: ({ payload }) => {
+      if (typeof payload.text !== 'string') {
+        return payload;
+      }
+
+      const text = payload.text.trim();
+      if (text.toUpperCase() !== 'NO_REPLY' && text !== 'REPLY_SKIP') {
+        return payload;
+      }
+
+      const hasOtherContent =
+        Boolean(payload.mediaUrl?.trim()) ||
+        (payload.mediaUrls?.length ?? 0) > 0 ||
+        (payload.attachments?.length ?? 0) > 0 ||
+        Boolean(payload.fallbackText?.text.trim()) ||
+        Boolean(payload.presentation) ||
+        Boolean(payload.interactive) ||
+        Boolean(payload.location) ||
+        Boolean(payload.btw) ||
+        Boolean(payload.spokenText?.trim()) ||
+        Boolean(payload.ttsSupplement) ||
+        Object.keys(payload.channelData ?? {}).length > 0;
+
+      return hasOtherContent ? payload : null;
+    },
+
     resolveTarget: ({
       to,
       ctx,
