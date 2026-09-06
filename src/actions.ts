@@ -164,9 +164,9 @@ export const xmppMessageActions = {
     }
 
     const target =
-      nonEmptyString(params.chatJid) ||
-      nonEmptyString(params.to) ||
-      nonEmptyString(toolContext?.currentChannelId) ||
+      nonEmptyString(params.chatJid) ??
+      nonEmptyString(params.to) ??
+      nonEmptyString(toolContext?.currentChannelId) ??
       '';
     if (!target) {
       return jsonResult({ ok: false, error: 'Target JID is required' });
@@ -175,8 +175,8 @@ export const xmppMessageActions = {
     const account = resolveXmppAccount({ cfg, accountId });
     const normalizedTarget = bareJid(target.replace(/^xmpp:/, ''));
     const messageId =
-      nonEmptyString(params.messageId) ||
-      getRecentInboundMessageId(account.accountId, normalizedTarget) ||
+      nonEmptyString(params.messageId) ??
+      getRecentInboundMessageId(account.accountId, normalizedTarget) ??
       '';
     if (!messageId) {
       return jsonResult({ ok: false, error: 'messageId is required for reactions' });

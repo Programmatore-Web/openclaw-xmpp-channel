@@ -179,6 +179,34 @@ describe('presence listener rejection ownership', () => {
     return { listener, send, warn };
   }
 
+  it.each([
+    { name: 'missing', text: undefined, expectedText: '' },
+    { name: 'empty', text: '', expectedText: '' },
+    { name: 'non-empty', text: 'Service unavailable', expectedText: 'Service unavailable' },
+  ])('preserves $name presence error text in the warning log', async ({ text, expectedText }) => {
+    const h = harness();
+    const xmlns = 'urn:ietf:params:xml:ns:xmpp-stanzas';
+    const stanza = xml(
+      'presence',
+      { from: 'user@example.com/resource', type: 'error' },
+      xml(
+        'error',
+        { type: 'cancel' },
+        xml('service-unavailable', { xmlns }),
+        ...(text === undefined ? [] : [xml('text', { xmlns }, text)])
+      )
+    );
+
+    expect(h.listener(stanza)).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.warn).toHaveBeenCalledOnce();
+    expect(h.warn).toHaveBeenCalledWith(
+      `[${accountId}] XMPP presence error from user@example.com/resource: type=cancel condition=service-unavailable text="${expectedText}"`
+    );
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
   it.each(['probe', 'unsubscribe'])(
     'handles rejected %s sends and remains usable',
     async (type) => {

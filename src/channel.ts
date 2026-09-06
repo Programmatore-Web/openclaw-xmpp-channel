@@ -318,7 +318,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
   // Mentions adapter
   mentions: {
     stripPatterns: ({ ctx }: { ctx: { To?: string } }) => {
-      const selfJid = ctx.To?.replace(/^xmpp:/, '') || '';
+      const selfJid = ctx.To?.replace(/^xmpp:/, '') ?? '';
       if (!selfJid) {
         return [];
       }

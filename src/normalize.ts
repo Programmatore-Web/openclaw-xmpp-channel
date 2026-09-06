@@ -91,7 +91,7 @@ function normalizeBracketedIpv6Literal(domain: string): string | undefined {
   }
 
   const parsed = SocketAddress.parse(`[${address}]:0`);
-  if (!parsed || parsed.family !== 'ipv6' || !parsed.address) {
+  if (parsed?.family !== 'ipv6' || !parsed.address) {
     return undefined;
   }
 
