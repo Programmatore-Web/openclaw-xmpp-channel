@@ -1,3 +1,5 @@
+// Emit and load the ambient XMPP types through the published declaration graph.
+import './src/declarations.js';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/core';
 import { emptyPluginConfigSchema } from 'openclaw/plugin-sdk/core';
 import { xmppPlugin } from './src/channel.js';
