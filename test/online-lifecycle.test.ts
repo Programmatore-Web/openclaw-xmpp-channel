@@ -49,11 +49,19 @@ async function connect() {
     if (patch.connected) events.push('connected');
   });
   let online: ((address: { toString(): string }) => void) | undefined;
+  let startupOnline: (() => void) | undefined;
   const xmpp = {
+    status: 'offline',
+    options: { service: 'xmpp://example.com:5222', domain: 'example.com' },
     on: vi.fn((event: string, handler: typeof online) => {
-      if (event === 'online') online = handler;
+      if (event === 'online') {
+        if (online) startupOnline = handler;
+        else online = handler;
+      }
     }),
-    start: vi.fn().mockResolvedValue(undefined),
+    off: vi.fn(),
+    connect: vi.fn().mockResolvedValue(undefined),
+    open: vi.fn(async () => startupOnline?.()),
     stop: vi.fn().mockResolvedValue(undefined),
     send: vi.fn((stanza: Element) => {
       events.push(stanza.is('iq') ? 'carbons' : 'presence');
