@@ -45,6 +45,64 @@ function generateSessionId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
 }
 
+interface StartableXmppClient {
+  status: string;
+  options: { service: string; domain: string; lang?: string };
+  reconnect?: { stop(): void };
+  connect(service: string): Promise<void>;
+  open(options: { domain: string; lang?: string }): Promise<void>;
+  on(event: 'online', handler: () => void): void;
+  on(event: 'error', handler: (error: Error) => void): void;
+  off(event: 'online', handler: () => void): void;
+  off(event: 'error', handler: (error: Error) => void): void;
+}
+
+/**
+ * Start a client with one rejection owner for connect, stream open, and online.
+ *
+ * @xmpp/connection 0.14.0 creates its online Promise before awaiting a separate
+ * open Promise. If one entity error rejects both, start() exposes the open
+ * rejection but abandons the online rejection. Keep the library's connection
+ * and reconnect behavior while owning both lower-level operations here.
+ */
+function startXmppClient(xmpp: ReturnType<typeof client>): Promise<void> {
+  const entity = xmpp as unknown as StartableXmppClient;
+
+  return new Promise<void>((resolve, reject) => {
+    if (entity.status !== 'offline') {
+      reject(new Error('Connection is not offline'));
+      return;
+    }
+
+    let settled = false;
+    const cleanup = () => {
+      entity.off('online', onOnline);
+      entity.off('error', onError);
+    };
+    const settle = (complete: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      complete();
+    };
+    const onOnline = () => settle(resolve);
+    const onError = (error: Error) => settle(() => reject(error));
+
+    entity.on('online', onOnline);
+    entity.on('error', onError);
+
+    const { service, domain, lang } = entity.options;
+    void entity
+      .connect(service)
+      .then(() => entity.open({ domain, lang }))
+      .catch((error: unknown) =>
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))))
+      );
+  });
+}
+
 /**
  * Get active client for an account
  */
@@ -268,10 +326,13 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
 
   // Start connection
   try {
-    await xmpp.start();
+    await startXmppClient(xmpp);
     clearReconnectState(accountId);
     initReconnectState(accountId);
   } catch (err) {
+    // Once plugin backoff owns a failed startup, prevent this failed client's
+    // built-in one-second reconnect loop from racing the scheduled replacement.
+    (xmpp as unknown as StartableXmppClient).reconnect?.stop();
     log?.error?.(
       `[${accountId}] XMPP connection failed: ${err instanceof Error ? err.message : String(err)}`
     );

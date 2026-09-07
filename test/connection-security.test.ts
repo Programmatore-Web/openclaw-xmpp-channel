@@ -3,16 +3,32 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayStartContext, ResolvedXmppAccount } from '../src/types.js';
 
 const xmppMocks = vi.hoisted(() => {
+  let startupOnline: (() => void) | undefined;
+  let applicationOnlineRegistered = false;
   const clientInstance = {
+    status: 'offline',
+    options: { service: '', domain: '' },
     isSecure: vi.fn(() => true),
-    on: vi.fn(),
-    start: vi.fn(async () => undefined),
+    on: vi.fn((event: string, handler: () => void) => {
+      if (event === 'online') {
+        if (applicationOnlineRegistered) startupOnline = handler;
+        else applicationOnlineRegistered = true;
+      }
+    }),
+    off: vi.fn(),
+    connect: vi.fn(async () => undefined),
+    open: vi.fn(async () => startupOnline?.()),
     stop: vi.fn(async () => undefined),
     send: vi.fn(async () => undefined),
   };
   return {
     clientInstance,
-    client: vi.fn((_options: unknown) => clientInstance),
+    client: vi.fn((options: { service: string; domain: string }) => {
+      applicationOnlineRegistered = false;
+      startupOnline = undefined;
+      clientInstance.options = options;
+      return clientInstance;
+    }),
     xml: vi.fn((name: string, attrs: Record<string, string> = {}) => ({ name, attrs })),
   };
 });
