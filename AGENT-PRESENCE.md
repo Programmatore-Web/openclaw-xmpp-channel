@@ -207,9 +207,9 @@ server roster independently; D5 is not a roster-administration lock across clien
 ## Fresh session, resumption and shutdown
 
 Fresh `online` preserves D2's immediate MUC identity invalidation and SM readiness
-gate. After readiness, presence resets its publication state, reconciles the roster
-and publishes once. Carbons, connected status and MUC initialization retain their
-existing fresh-session path, independent of the roster task.
+gate. Presence resets before the gate; only after readiness does reconciliation
+start, followed by initial publication. Carbons, connected status and MUC
+initialization follow independent fresh-session paths as detailed below.
 
 Native 0.14.0 SM emits `resumed` before `_ready(true)` sets client status to online.
 D5 checks presence on the next microtask, after that native readiness transition.
@@ -233,3 +233,86 @@ D5 does not issue room-specific occupant `show` updates or change MUC identity,
 whois, authorization or join policy. Thunderbird direct roster presence is the
 interop target. Live Thunderbird/server field verification remains separate from
 the deterministic tests and the supplied verified client mapping.
+
+## Post-SM-readiness dependencies (second P2 correction)
+
+At commit `f0ec5afbc332747e9c233609086012716634a987`, fresh initialization started
+keepalive, then awaited the Carbons enable write before starting presence,
+publishing connected status or entering the MUC loop. The installed 0.14.0
+`@xmpp/connection` ordinary `send()` awaits the socket write callback. D2 R2
+deliberately gives that application write no delivery deadline. Catching a
+Carbons rejection as non-fatal therefore did not cover a Promise that never
+settles: this optional feature became an indefinite initialization barrier.
+
+The regression on that commit holds only Carbons for 20 seconds while simulated
+server/transport operations remain functional. It observes an online, SM-ready
+stream with one Carbons attempt, but zero roster requests, operational broadcasts,
+trusted subscribe/probe responses and MUC joins; connected status remains false.
+The corrected test observes one roster request, one broadcast, one `subscribed`,
+two directed replies, connected status and configured MUC initialization without
+settling Carbons. A separate test completes two rooms through the real MUC join
+implementation, including leave delay and self-presence confirmation.
+
+### Dependency audit
+
+| Operation | Classification | Required ordering / ownership |
+| --- | --- | --- |
+| Native SM readiness and current-generation check | A: required shared prerequisite | Every application initialization waits for the existing readiness gate to settle safely. Recovery reset and session-ready bookkeeping follow that gate. |
+| Keepalive start | C: background operational task | Synchronous registration of the existing account-owned interval after readiness. No ping completion gates another phase. Disconnect/disposal stops the interval. |
+| D5 `presence.ready(true)` | B: independent initialization, then C: watcher | Starts immediately after readiness/keepalive registration, before optional Carbons. Its internal connected flag enables current authorized requests while roster reconciliation proceeds. The caller does not await roster, pairing or broadcast IO. |
+| Roster authorization/revocation before global broadcast | A: required within presence only | The security gate must succeed before global presence. Failure or timeout stays fail-closed, while messaging, connected status and MUC proceed independently. |
+| Connected status | B: independent lifecycle publication | Set after successful SM readiness, without waiting for Carbons, roster reconciliation, operational broadcast or MUC completion. It reports transport readiness, not optional-feature success. |
+| Carbons enable | B: independent, best-effort one-shot | Exactly one new application attempt per fresh logical session. The task has no timer, retry, subscriber or shared completion state. Its result never starts another phase. |
+| Configured MUC initialization | B: independent room initialization | Starts without waiting for Carbons or presence tasks. Existing configured-room ordering and each room's leave → delay → join → confirmation sequence are preserved. Their waits never gate connected status, direct presence or messaging. |
+
+The fresh-session Carbons task is detached from the online continuation and owns
+its own rejection boundary. Success logs only that the enable stanza was sent;
+write completion alone is not server confirmation that Carbons is enabled.
+Success/failure diagnostics run only for the same current client and online
+generation. Reporter exceptions are contained without changing `lastError` or
+escaping as unhandled rejections. Disconnect, fresh reset, abort and replacement
+invalidate that generation. Late completion cannot start presence/MUC, roll back
+connected status, schedule reconnect or mutate a newer generation. The MUC error
+boundary and outer online error boundary also check generation before reporting.
+
+There is no Carbons wait budget: none is needed because no independent phase
+awaits it. No application-wide timeout or session retirement is added. A native
+write may remain pending, but D5 creates no retry or additional attempt within
+that logical session. A real fresh login creates its own one-shot attempt.
+
+Successful native SM resumption follows the existing separate handler, retains
+presence reconciliation/publication state, and sends only a required presence
+correction. It creates no Carbons attempt, roster fetch or MUC initialization.
+Native replay of an already queued stanza remains xmpp.js's responsibility.
+
+### Final dependency answers and limits
+
+- Can unresolved Carbons block presence, connected status or MUC joins? No to
+  all three: the regression keeps Carbons pending while each phase proceeds.
+- Can roster reconciliation block messaging/MUC? No. Only global presence is
+  intentionally serialized behind the authorization gate.
+- Can operational presence publication block connected/MUC? No. Tests also
+  hold Carbons and the broadcast simultaneously while connected status and both
+  configured MUC initializations proceed.
+- Can the stuck optional initialization produce repeated copies? No Carbons
+  retry exists. Roster IO remains one-shot, and the first P2's physical broadcast
+  slot still prevents polling from starting another unresolved publication.
+- Can late optional initialization completion mutate a newer generation? No;
+  late Carbons outcomes and MUC outcomes are tested across lifecycle changes,
+  including throwing diagnostic callbacks.
+
+Carbons adds zero timers/listeners. Six reloads with unresolved Carbons retain
+constant current-client listener/timer counts, remove old account abort/SM/stanza
+listeners, and leave zero owned timers after shutdown. Late settlement of all
+retired tasks creates no traffic or resources. The first P2's hour-long physical
+broadcast serialization and stale-generation tests remain required coverage.
+
+These guarantees concern application initialization dependencies, not a new
+socket-wide scheduler. Existing periodic keepalives issue distinct ping IQs; a
+stuck ping can overlap a later scheduled ping under the unchanged keepalive
+policy. Also, existing sequential MUC policy means a stuck room write can delay
+later rooms; it cannot delay the already independent direct-presence/connected
+phases. Those are separate background/room liveness limits, not Carbons retries
+or dependencies. A transport unable to carry other stanzas cannot be made healthy
+by detaching Carbons, and an unresolved Carbons write gives no feature-availability
+guarantee. Live Thunderbird/server validation remains outstanding.

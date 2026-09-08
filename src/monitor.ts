@@ -625,6 +625,7 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
 
   // Connection events
   const onOnline = (address: { toString(): string }): void => {
+    let generation = onlineGeneration;
     void (async () => {
       if (!isActive()) {
         return;
@@ -635,7 +636,7 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       // even on the same entity: old MUC observations cannot authorize traffic
       // during readiness or before new real-JID-bearing presence arrives.
       clearClientRoomState(accountId);
-      const generation = onlineGeneration;
+      generation = onlineGeneration;
       const isCurrent = () => isActive() && generation === onlineGeneration;
       log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
 
@@ -674,31 +675,43 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       // Start XEP-0199 keepalive pings
       startKeepalive(xmpp, accountId, jidDomain, log);
 
-      // Enable XEP-0280 Message Carbons
-      try {
-        const enableCarbons = xml(
-          'iq',
-          { type: 'set', id: `carbons-${Date.now()}` },
-          xml('enable', { xmlns: 'urn:xmpp:carbons:2' })
-        );
-        await xmpp.send(enableCarbons);
-        log?.debug?.(`[${accountId}] XEP-0280 Message Carbons enabled`);
-      } catch (err) {
-        log?.warn?.(
-          `[${accountId}] Failed to enable carbons: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-
       if (!isCurrent()) {
         return;
       }
-      // Presence reconciliation owns its own bounded task. Messaging and MUC
-      // readiness must not depend on roster availability or pairing-store IO.
+      // SM readiness is the shared prerequisite. Presence reconciliation starts
+      // independently of optional Carbons; only global presence waits for roster
+      // authorization. Messaging, connected status and MUC do not await either.
       void presence.ready(true);
 
       if (!isCurrent()) {
         return;
       }
+
+      // One best-effort Carbons attempt per fresh session, never on SM resume.
+      // Ordinary send() has no deadline and cannot be cancelled by a wait budget.
+      // Its settlement owns only current-generation diagnostics, no next phase.
+      void (async () => {
+        try {
+          const enableCarbons = xml(
+            'iq',
+            { type: 'set', id: `carbons-${Date.now()}` },
+            xml('enable', { xmlns: 'urn:xmpp:carbons:2' })
+          );
+          await xmpp.send(enableCarbons);
+          if (isCurrent()) {
+            log?.debug?.(`[${accountId}] XEP-0280 Message Carbons enable sent`);
+          }
+        } catch (err) {
+          if (isCurrent()) {
+            log?.warn?.(
+              `[${accountId}] Failed to enable carbons: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      })().catch(() => {
+        // Optional diagnostic failures cannot escape into lifecycle/status handling.
+      });
+
       // Mark as connected
       setStatus?.({
         accountId,
@@ -723,11 +736,16 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
           log?.debug?.(`[${accountId}] No group rooms configured`);
         }
       } catch (err) {
-        log?.warn?.(
-          `[${accountId}] Room (re)join interrupted (non-fatal, will retry on reconnect): ${err instanceof Error ? err.message : String(err)}`
-        );
+        if (isCurrent()) {
+          log?.warn?.(
+            `[${accountId}] Room (re)join interrupted (non-fatal, will retry on reconnect): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
     })().catch((err) => {
+      if (!isActive() || generation !== onlineGeneration) {
+        return;
+      }
       try {
         log?.error?.(
           `[${accountId}] XMPP online task failed: ${err instanceof Error ? err.message : String(err)}`

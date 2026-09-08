@@ -201,6 +201,24 @@ async function fixture(monitored: boolean | 'prepared' = true, config: Partial<X
   };
 }
 
+function holdOneCarbons(h: Awaited<ReturnType<typeof fixture>>) {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  const original = h.send.getMockImplementation()!;
+  let held = false;
+  h.send.mockImplementation(async (stanza) => {
+    const hold = !held && Boolean(stanza.getChild('enable', 'urn:xmpp:carbons:2'));
+    if (hold) held = true;
+    await original(stanza); // Other writes, native SM and simulated server stay functional.
+    if (hold) await promise;
+  });
+  return { resolve, reject };
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.resetAllMocks();
@@ -252,6 +270,255 @@ function redirect(xmpp: NativeClient, host = 'redirect.example.com:5223') {
 }
 
 describe('D5 presence with native SM and account lifecycle', () => {
+  it('P2 Carbons: a pending optional write cannot gate ready presence, connected status or MUC', async () => {
+    const h = await fixture('prepared', { presenceAllowFrom: ['alice@example.com'] });
+    const pending = holdOneCarbons(h);
+    try {
+      lifetimes.push(startXmppConnection(h.ctx));
+      await vi.advanceTimersByTimeAsync(20000);
+      for (const type of ['subscribe', 'probe']) {
+        h.xmpp._onElement(xml('presence', { from: 'alice@example.com/desktop', type }));
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      const stanzas = h.send.mock.calls.map(([s]) => s);
+      expect({
+        online: h.xmpp.status,
+        smReady: h.xmpp.streamManagement.enabled,
+        carbons: stanzas.filter((s) => s.getChild('enable', 'urn:xmpp:carbons:2')).length,
+        roster: rosterGets(h).length,
+        broadcasts: broadcasts(h).length,
+        subscribed: stanzas.filter((s) => s.attrs.type === 'subscribed').length,
+        directed: stanzas.filter(
+          (s) => s.name === 'presence' && s.attrs.to === 'alice@example.com' && !s.attrs.type
+        ).length,
+        connected: h.status.connected === true,
+        muc: mocks.joinMuc.mock.calls.length,
+      }).toEqual({
+        online: 'online',
+        smReady: true,
+        carbons: 1,
+        roster: 1,
+        broadcasts: 1,
+        subscribed: 1,
+        directed: 2,
+        connected: true,
+        muc: 1,
+      });
+    } finally {
+      h.controller.abort();
+      pending.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+  });
+  it.each([
+    ['resolve', false],
+    ['reject', false],
+    ['resolve', true],
+    ['reject', true],
+  ] as const)(
+    'P2 Carbons: late %s is diagnostic only, even if logging throws=%s',
+    async (outcome, throws) => {
+      const h = await fixture('prepared');
+      const pending = holdOneCarbons(h);
+      lifetimes.push(startXmppConnection(h.ctx));
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(h.status.connected).toBe(true);
+      expect(carbons(h)).toHaveLength(1);
+      expect(rosterGets(h)).toHaveLength(1);
+      expect(broadcasts(h)).toHaveLength(1);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
+      if (throws) {
+        vi.mocked(h.ctx.log!.debug!).mockImplementation(() => {
+          throw new Error('diagnostic failure');
+        });
+        vi.mocked(h.ctx.log!.warn!).mockImplementation(() => {
+          throw new Error('diagnostic failure');
+        });
+      }
+      h.status.lastError = 'Current account condition';
+      const status = { ...h.status };
+      const updates = vi.mocked(h.ctx.setStatus!).mock.calls.length;
+      const sends = h.send.mock.calls.length;
+      const timers = vi.getTimerCount();
+      if (outcome === 'resolve') pending.resolve();
+      else pending.reject(new Error('optional write failure'));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.status).toEqual(status);
+      expect(h.ctx.setStatus).toHaveBeenCalledTimes(updates);
+      expect(h.send).toHaveBeenCalledTimes(sends);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
+      expect(h.stop).not.toHaveBeenCalled();
+      expect(h.ctx.log?.error).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(timers);
+      // Keep unrelated shutdown diagnostics functional.
+      vi.mocked(h.ctx.log!.debug!).mockImplementation(() => {});
+      vi.mocked(h.ctx.log!.warn!).mockImplementation(() => {});
+    }
+  );
+  it('P2 Carbons: real configured MUC joins finish while the optional write is still pending', async () => {
+    const groups = ['first@conference.example.com', 'second@conference.example.com'];
+    const h = await fixture('prepared', { groups });
+    const pending = holdOneCarbons(h);
+    const actualRooms = await vi.importActual<typeof import('../src/rooms.js')>('../src/rooms.js');
+    mocks.joinMuc.mockImplementation(actualRooms.joinMuc);
+    const original = h.send.getMockImplementation()!;
+    h.send.mockImplementation(async (stanza) => {
+      await original(stanza);
+      if (stanza.name === 'presence' && stanza.getChild('x', 'http://jabber.org/protocol/muc')) {
+        h.xmpp._onElement(
+          xml(
+            'presence',
+            { from: stanza.attrs.to },
+            xml(
+              'x',
+              { xmlns: 'http://jabber.org/protocol/muc#user' },
+              xml('item', { jid: 'agent@example.com/resource' }),
+              xml('status', { code: '110' })
+            )
+          )
+        );
+      }
+    });
+    lifetimes.push(startXmppConnection(h.ctx));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(carbons(h)).toHaveLength(1);
+    expect(broadcasts(h)).toHaveLength(1);
+    expect(h.status.connected).toBe(true);
+    expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
+    expect(joinedRooms.get(accountId)).toEqual(new Set(groups));
+    expect(pendingMucJoins.size).toBe(0);
+    h.controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    pending.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(joinedRooms.has(accountId)).toBe(false);
+  });
+  it.each(['disconnect', 'abort', 'replacement', 'fresh'] as const)(
+    'P2 Carbons: late success/failure after %s cannot touch the current lifecycle',
+    async (action) => {
+      for (const outcome of ['resolve', 'reject'] as const) {
+        const h = await fixture('prepared');
+        const pending = holdOneCarbons(h);
+        lifetimes.push(startXmppConnection(h.ctx));
+        await vi.advanceTimersByTimeAsync(20000);
+        let current = h;
+        if (action === 'abort') h.controller.abort();
+        else if (action === 'replacement') current = await fixture();
+        else {
+          h.outage();
+          if (action === 'fresh') {
+            h.restore(true);
+            await vi.advanceTimersByTimeAsync(1010);
+            expect(carbons(h)).toHaveLength(2);
+            expect(rosterGets(h)).toHaveLength(2);
+            expect(broadcasts(h)).toHaveLength(2);
+          }
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        current.status.lastError = 'Current generation condition';
+        const status = { ...current.status };
+        const updates = vi.mocked(current.ctx.setStatus!).mock.calls.length;
+        const oldUpdates = vi.mocked(h.ctx.setStatus!).mock.calls.length;
+        const diagnostics = [
+          vi.mocked(h.ctx.log!.debug!).mock.calls.length,
+          vi.mocked(h.ctx.log!.warn!).mock.calls.length,
+        ];
+        const counts = [
+          h.send.mock.calls.length,
+          mocks.joinMuc.mock.calls.length,
+          h.connect.mock.calls.length,
+          vi.getTimerCount(),
+        ];
+        if (outcome === 'resolve') pending.resolve();
+        else pending.reject(new Error('old optional write failure'));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(current.status).toEqual(status);
+        expect(current.ctx.setStatus).toHaveBeenCalledTimes(updates);
+        expect(h.ctx.setStatus).toHaveBeenCalledTimes(oldUpdates);
+        expect([
+          vi.mocked(h.ctx.log!.debug!).mock.calls.length,
+          vi.mocked(h.ctx.log!.warn!).mock.calls.length,
+        ]).toEqual(diagnostics);
+        expect([
+          h.send.mock.calls.length,
+          mocks.joinMuc.mock.calls.length,
+          h.connect.mock.calls.length,
+          vi.getTimerCount(),
+        ]).toEqual(counts);
+        current.controller.abort();
+        h.controller.abort();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    }
+  );
+  it.each([false, true])(
+    'P2 Carbons: native SM resume never repeats optional initialization, presence changed=%s',
+    async (changed) => {
+      const h = await fixture('prepared');
+      const pending = holdOneCarbons(h);
+      lifetimes.push(startXmppConnection(h.ctx));
+      await vi.advanceTimersByTimeAsync(20000);
+      h.outage();
+      h.status.busy = changed;
+      h.restore();
+      await vi.advanceTimersByTimeAsync(1010);
+      expect(h.xmpp.status).toBe('online');
+      expect(carbons(h)).toHaveLength(1);
+      expect(rosterGets(h)).toHaveLength(1);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
+      expect(broadcasts(h)).toHaveLength(changed ? 2 : 1);
+      const updates = vi.mocked(h.ctx.setStatus!).mock.calls.length;
+      pending.reject(new Error('pre-resume optional write failure'));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(carbons(h)).toHaveLength(1);
+      expect(broadcasts(h)).toHaveLength(changed ? 2 : 1);
+      expect(h.ctx.setStatus).toHaveBeenCalledTimes(updates);
+      expect(h.status.lastError).toBeNull();
+    }
+  );
+  it('P2 Carbons: six reloads with pending optional writes keep constant resources and inert old tasks', async () => {
+    let expectedTimers: number | undefined;
+    const retired: Array<{
+      h: Awaited<ReturnType<typeof fixture>>;
+      pending: ReturnType<typeof holdOneCarbons>;
+    }> = [];
+    for (let cycle = 0; cycle < 6; cycle++) {
+      const h = await fixture('prepared');
+      const pending = holdOneCarbons(h);
+      lifetimes.push(startXmppConnection(h.ctx));
+      await vi.advanceTimersByTimeAsync(1000);
+      expectedTimers ??= vi.getTimerCount();
+      expect(expectedTimers).toBe(4); // Native SM request/deadline, keepalive and D5 poll; no Carbons timer.
+      expect(vi.getTimerCount()).toBe(expectedTimers);
+      await vi.advanceTimersByTimeAsync(19000);
+      expect(vi.getTimerCount()).toBe(expectedTimers);
+      expect(carbons(h)).toHaveLength(1);
+      expect(rosterGets(h)).toHaveLength(1);
+      expect(broadcasts(h)).toHaveLength(1);
+      expect(h.status.connected).toBe(true);
+      expect(accountLifecycles.size).toBe(1);
+      expect(h.xmpp.listenerCount('stanza')).toBe(2);
+      for (const old of retired) {
+        expect(old.h.xmpp.listenerCount('stanza')).toBe(0);
+        expect(old.h.xmpp.streamManagement.listenerCount('resumed')).toBe(0);
+        expect(getEventListeners(old.h.controller.signal, 'abort')).toHaveLength(0);
+      }
+      retired.push({ h, pending });
+    }
+    retired.at(-1)!.h.controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+    const counts = retired.map(({ h }) => h.send.mock.calls.length);
+    for (const old of retired) old.pending.resolve();
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(retired.map(({ h }) => h.send.mock.calls.length)).toEqual(counts);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(activeClients.size).toBe(0);
+  });
+  const carbons = (h: Awaited<ReturnType<typeof fixture>>) =>
+    h.send.mock.calls.map(([s]) => s).filter((s) => s.getChild('enable', 'urn:xmpp:carbons:2'));
   it('P2: native SM may replay a queued stanza without D5 creating an additional unresolved publication', async () => {
     const h = await fixture();
     let complete!: () => void;

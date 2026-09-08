@@ -34,7 +34,9 @@ and restores keepalive without repeating Carbons, initial presence or MUC initia
 D5 retains the published operational state and sends only a changed-state correction
 after native resumed readiness; it does not repeat roster reconciliation.
 A failed resume followed by fresh `online` waits for native SM readiness, then resets
-recovery and initializes Carbons, connected status and configured MUCs. D5 reconciles
+recovery and starts independent Carbons, connected-status and configured-MUC phases.
+Carbons is one contained best-effort attempt per fresh session, with no completion
+dependency, timeout or retry; a pending write cannot gate any other phase. D5 reconciles
 persistent roster subscriptions before initial global presence, independently of
 messaging/MUC readiness. See [D5 presence design](AGENT-PRESENCE.md).
 At fresh `online`, before waiting for readiness, the monitor cancels the previous

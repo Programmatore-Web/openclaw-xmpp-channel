@@ -33,11 +33,13 @@ let emitters: EventEmitter[];
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
   releases.push(resolve);
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function connect(
@@ -247,7 +249,7 @@ afterEach(async () => {
 });
 
 describe('online listener lifecycle', () => {
-  it('returns void and waits for SM readiness before the sequential online phases', async () => {
+  it('gates independent online phases on SM readiness, preserving only MUC join ordering', async () => {
     const sm = { enabled: false, enableSent: false };
     const h = await connect(sm, true);
     const carbons = deferred();
@@ -280,27 +282,19 @@ describe('online listener lifecycle', () => {
 
     sm.enabled = true;
     await vi.advanceTimersByTimeAsync(10);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons']);
+    const independent = ['online', 'keepalive', 'carbons', 'connected', rooms[0], 'presence'];
+    expect(h.events).toEqual(expect.arrayContaining(independent));
+    expect(h.events).toHaveLength(independent.length);
     expect(keepaliveIntervals.has(accountId)).toBe(true);
     expect(h.send.mock.calls[0][0].getChild('enable', 'urn:xmpp:carbons:2')).toBeDefined();
-    carbons.resolve();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'connected', rooms[0], 'presence']);
-    presence.resolve();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'connected', rooms[0], 'presence']);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(h.send).toHaveBeenCalledTimes(2); // Neither unresolved application write is retried.
     expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
     firstJoin.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual([
-      'online',
-      'keepalive',
-      'carbons',
-      'connected',
-      rooms[0],
-      'presence',
-      rooms[1],
-    ]);
+    // The second room starts with both Carbons and the initial broadcast still pending.
+    expect(h.events).toEqual(expect.arrayContaining([...independent, rooms[1]]));
+    expect(h.events).toHaveLength(independent.length + 1);
     expect(mocks.joinMuc).toHaveBeenNthCalledWith(
       2,
       h.xmpp,
@@ -318,6 +312,11 @@ describe('online listener lifecycle', () => {
       lastConnectedAt: expect.any(Number),
       lastError: null,
     });
+    carbons.resolve();
+    presence.resolve();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.send).toHaveBeenCalledTimes(2);
+    expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
   });
 
   it('ignores a stale client before logging or starting keepalive', async () => {
@@ -340,14 +339,17 @@ describe('online listener lifecycle', () => {
       const h = await connect(sm, mode === 'enabled');
       h.online({ toString: () => 'bot@example.com/resource' });
       await vi.advanceTimersByTimeAsync(0);
-      expect(h.events).toEqual([
-        'online',
-        'keepalive',
-        'carbons',
-        'connected',
-        ...rooms,
-        'presence',
-      ]);
+      expect(h.events).toEqual(
+        expect.arrayContaining([
+          'online',
+          'keepalive',
+          'carbons',
+          'connected',
+          ...rooms,
+          'presence',
+        ])
+      );
+      expect(h.events).toHaveLength(7);
       expect(h.emitter.listenerCount('nonza')).toBe(0);
       expect(vi.getTimerCount()).toBe(2); // Keepalive and the single presence watcher.
     }
@@ -375,7 +377,10 @@ describe('online listener lifecycle', () => {
     expect(h.send).not.toHaveBeenCalled();
     sm.enableSent = false;
     await vi.advanceTimersByTimeAsync(10);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'connected', ...rooms, 'presence']);
+    expect(h.events).toEqual(
+      expect.arrayContaining(['online', 'keepalive', 'carbons', 'connected', ...rooms, 'presence'])
+    );
+    expect(h.events).toHaveLength(7);
     expect(h.log.error).not.toHaveBeenCalled();
   });
 
@@ -588,10 +593,8 @@ describe('online listener lifecycle', () => {
       controller.abort();
       pending.resolve();
       await vi.advanceTimersByTimeAsync(0);
-      expect(h.send).toHaveBeenCalledTimes(phase === 'carbons' ? 1 : 2);
-      expect(mocks.joinMuc).toHaveBeenCalledTimes(
-        phase === 'carbons' ? 0 : phase === 'join' ? 1 : 2
-      );
+      expect(h.send).toHaveBeenCalledTimes(2);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(phase === 'join' ? 1 : 2);
     }
   );
 
@@ -640,6 +643,34 @@ describe('online listener lifecycle', () => {
     expect(mocks.joinMuc).toHaveBeenCalledTimes(3);
     expect(vi.getTimerCount()).toBe(2); // Keepalive and presence watcher.
   });
+
+  it.each(['resolve', 'reject'] as const)(
+    'contains a late MUC %s after a fresh generation without touching current status',
+    async (outcome) => {
+      const h = await connect();
+      const oldJoin = deferred();
+      mocks.joinMuc.mockReturnValueOnce(oldJoin.promise);
+      h.online({ toString: () => 'agent@example.com/old' });
+      await vi.advanceTimersByTimeAsync(0);
+      h.online({ toString: () => 'agent@example.com/current' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(3); // One old attempt, then both current rooms.
+      h.setStatus.mockClear();
+      h.log.warn.mockImplementation(() => {
+        throw new Error('late reporter failure');
+      });
+      const sends = h.send.mock.calls.length;
+      if (outcome === 'resolve') oldJoin.resolve();
+      else oldJoin.reject(new Error('old join failure'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(3);
+      expect(h.send).toHaveBeenCalledTimes(sends);
+      expect(h.setStatus).not.toHaveBeenCalled();
+      expect(h.log.warn).not.toHaveBeenCalled();
+      expect(h.log.error).not.toHaveBeenCalled();
+      h.log.warn.mockImplementation(() => {});
+    }
+  );
 
   it.each(['none', 'log', 'status', 'both'])(
     'owns unexpected failure with terminal reporting failure: %s',
