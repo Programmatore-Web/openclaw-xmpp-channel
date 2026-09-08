@@ -16,6 +16,16 @@ const accountId = 'presence-test';
 const disposers: Array<() => void> = [];
 let pairing: ReturnType<typeof vi.fn>;
 
+function deferredWrite() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
 function fixture(overrides: Partial<XmppConfig> = {}) {
   const emitter = new EventEmitter();
   const status: ChannelAccountSnapshot = { accountId };
@@ -87,6 +97,43 @@ function fixture(overrides: Partial<XmppConfig> = {}) {
   };
 }
 
+/** Audit the installed send/write path: bytes enter socket.write synchronously,
+ * independently of when its completion callbacks (and send Promises) settle. */
+async function nativeWire(h: ReturnType<typeof fixture>) {
+  const actual = await vi.importActual<typeof import('@xmpp/client')>('@xmpp/client');
+  const native = actual.client({
+    service: 'xmpp://example.com:5222',
+    domain: 'example.com',
+    username: 'agent',
+  }) as unknown as {
+    status: string;
+    Transport: unknown;
+    _findTransport(service: string): unknown;
+    socket: { write(data: string, callback: (error?: Error) => void): void } | null;
+    reconnect: { stop(): void };
+    send(stanza: Element): Promise<void>;
+  };
+  const writes: Array<{ data: string; complete: (error?: Error) => void }> = [];
+  native.Transport = native._findTransport('xmpp://example.com:5222');
+  native.status = 'online';
+  native.socket = {
+    write: (data, complete) => {
+      writes.push({ data, complete });
+    },
+  };
+  disposers.push(() => {
+    native.reconnect.stop();
+    native.socket = null;
+  });
+  const original = h.send.getMockImplementation()!;
+  h.send.mockImplementation((stanza) =>
+    stanza.getChild('query', 'jabber:iq:roster') && stanza.attrs.type === 'get'
+      ? original(stanza)
+      : native.send(stanza)
+  );
+  return writes;
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   pairing = vi.fn().mockResolvedValue([]);
@@ -151,6 +198,24 @@ describe('Thunderbird mapping and exact SDK snapshot', () => {
 });
 
 describe('deduplication and session ownership', () => {
+  it('P2: keeps a timed-out physical broadcast serialized across repeated poll ticks', async () => {
+    const h = fixture();
+    const originalSend = h.send.getMockImplementation()!;
+    h.send.mockImplementation((stanza) => {
+      if (stanza.name === 'presence' && !stanza.attrs.to) {
+        return new Promise<void>(() => {});
+      }
+      return originalSend(stanza);
+    });
+    const ready = h.controller.ready(true);
+    const counts: number[] = [];
+    for (const elapsed of [5000, 1000, 4000, 10000]) {
+      await vi.advanceTimersByTimeAsync(elapsed);
+      counts.push(h.broadcasts().length);
+    }
+    await ready;
+    expect(counts).toEqual([1, 1, 1, 1]); // At 5s, 6s, 10s and 20s.
+  });
   it('publishes one initial, one DND, one available, and one text correction', async () => {
     const h = fixture();
     await h.controller.ready(true);
@@ -242,6 +307,169 @@ describe('deduplication and session ownership', () => {
   });
 });
 
+describe('P2 physical publication ownership', () => {
+  it.each([false, true])(
+    'coalesces late success to the latest state/text (initial busy=%s)',
+    async (busy) => {
+      const h = fixture();
+      h.status.busy = busy;
+      const pending = deferredWrite();
+      const original = h.send.getMockImplementation()!;
+      h.send.mockImplementationOnce(original).mockImplementationOnce(() => pending.promise);
+      const ready = h.controller.ready(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      h.status.busy = !busy;
+      h.config.presence = { availableText: 'Latest ready', unavailableText: 'Latest busy' };
+      await vi.advanceTimersByTimeAsync(19000);
+      await ready;
+      expect(h.broadcasts()).toHaveLength(1);
+      pending.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.broadcasts()).toHaveLength(2);
+      expect(h.broadcasts()[1].getChildText('show')).toBe(busy ? null : 'dnd');
+      expect(h.broadcasts()[1].getChildText('status')).toBe(busy ? 'Latest ready' : 'Latest busy');
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(h.broadcasts()).toHaveLength(2); // Latest successful publication is remembered.
+    }
+  );
+  it('drops intermediate changes that return to the physically pending value', async () => {
+    const h = fixture();
+    await h.controller.ready(true);
+    const pending = deferredWrite();
+    h.send.mockImplementationOnce(() => pending.promise);
+    h.status.busy = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    h.status.busy = false;
+    await vi.advanceTimersByTimeAsync(7000);
+    h.status.busy = true;
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(h.broadcasts()).toHaveLength(2);
+    pending.resolve();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.broadcasts()).toHaveLength(2);
+  });
+  it('contains late failure and retries only on a subsequent poll, never recursively', async () => {
+    const h = fixture();
+    await h.controller.ready(true);
+    const pending = deferredWrite();
+    h.send.mockImplementationOnce(() => pending.promise);
+    h.status.busy = true;
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(h.broadcasts()).toHaveLength(2);
+    pending.reject(new Error('test late rejection'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.broadcasts()).toHaveLength(2);
+    h.send.mockRejectedValueOnce(new Error('test retry rejection'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.broadcasts()).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.broadcasts()).toHaveLength(4);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(h.broadcasts()).toHaveLength(4);
+  });
+  it.each(['dispose', 'replace'] as const)(
+    'late completion after %s cannot publish or revive resources',
+    async (action) => {
+      const h = fixture();
+      await h.controller.ready(true);
+      const pending = deferredWrite();
+      h.send.mockImplementationOnce(() => pending.promise);
+      h.status.busy = true;
+      await vi.advanceTimersByTimeAsync(1000);
+      h.status.busy = false;
+      if (action === 'dispose') h.controller.dispose();
+      else h.replace();
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(vi.getTimerCount()).toBe(0);
+      pending.resolve();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(h.broadcasts()).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+      h.controller.dispose();
+      expect(h.emitter.listenerCount('stanza')).toBe(0);
+    }
+  );
+  it.each(['resolve', 'reject'] as const)(
+    'an old fresh-session %s cannot release the new physical lock',
+    async (outcome) => {
+      const h = fixture();
+      await h.controller.ready(true);
+      const old = deferredWrite();
+      h.send.mockImplementationOnce(() => old.promise);
+      h.status.busy = true;
+      await vi.advanceTimersByTimeAsync(1000);
+      h.disconnect();
+      h.controller.reset();
+      h.reconnect();
+      const next = deferredWrite();
+      const original = h.send.getMockImplementation()!;
+      h.send.mockImplementationOnce(original).mockImplementationOnce(() => next.promise);
+      const ready = h.controller.ready(true);
+      await vi.advanceTimersByTimeAsync(6000);
+      await ready;
+      h.status.busy = false;
+      if (outcome === 'resolve') old.resolve();
+      else old.reject(new Error('old stream failure'));
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(h.broadcasts()).toHaveLength(3);
+      next.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.broadcasts()).toHaveLength(4);
+      expect(h.broadcasts()[3].getChildText('show')).toBeNull();
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(h.broadcasts()).toHaveLength(4);
+    }
+  );
+  it.each([false, true])(
+    'SM resume preserves the physical barrier and corrects only changed=%s',
+    async (changed) => {
+      const h = fixture();
+      const pending = deferredWrite();
+      const original = h.send.getMockImplementation()!;
+      h.send.mockImplementationOnce(original).mockImplementationOnce(() => pending.promise);
+      const ready = h.controller.ready(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      h.disconnect();
+      await ready;
+      h.status.busy = changed;
+      h.reconnect();
+      await h.controller.ready(false);
+      await vi.advanceTimersByTimeAsync(20000);
+      expect(h.broadcasts()).toHaveLength(1);
+      pending.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.broadcasts()).toHaveLength(1); // Old generation callback cannot schedule a correction.
+      await vi.advanceTimersByTimeAsync(1000); // The current publisher consumes the outcome.
+      expect(h.broadcasts()).toHaveLength(changed ? 2 : 1);
+      expect(h.send.mock.calls.filter(([s]) => s.name === 'iq')).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(h.broadcasts()).toHaveLength(changed ? 2 : 1);
+    }
+  );
+  it('a never-settling physical send retains one slot and constant resources for an hour', async () => {
+    const h = fixture();
+    await h.controller.ready(true);
+    const pending = deferredWrite();
+    h.send.mockImplementationOnce(() => pending.promise);
+    h.status.busy = true;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(vi.getTimerCount()).toBe(2); // Poll plus one wait budget.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(vi.getTimerCount()).toBe(1); // Only polling, no repeated budgets/writes.
+    await vi.advanceTimersByTimeAsync(3600000);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(h.broadcasts()).toHaveLength(2); // Initial plus exactly one pending transition.
+    expect(h.ctx.log?.warn).toHaveBeenCalledTimes(1);
+    h.controller.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(h.emitter.listenerCount('stanza')).toBe(0);
+    pending.resolve();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.broadcasts()).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe('trusted subscriptions and probes', () => {
   it('unsubscribe cancels a pending approval and duplicate in-flight subscribe is coalesced', async () => {
     const h = fixture();
@@ -327,6 +555,128 @@ describe('trusted subscriptions and probes', () => {
     expect(h.presence().map((s) => s.attrs)).toEqual([{ to: alice, type: 'unsubscribed' }]);
     await h.controller.handle('probe', alice);
     expect(h.presence()).toHaveLength(1);
+  });
+});
+
+describe('P2 audit of one-shot bounded D5 writes', () => {
+  it.each(['resolve', 'reject'] as const)(
+    'a timed-out roster write/result cannot reopen reconciliation after late %s',
+    async (outcome) => {
+      const h = fixture();
+      const pending = deferredWrite();
+      h.send.mockImplementationOnce(() => pending.promise);
+      const ready = h.controller.ready(true);
+      const id = h.send.mock.calls[0][0].attrs.id;
+      expect(h.emitter.listenerCount('stanza')).toBe(2); // Push responder plus response waiter.
+      await vi.advanceTimersByTimeAsync(20000);
+      await ready;
+      expect(h.emitter.listenerCount('stanza')).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+      if (outcome === 'resolve') pending.resolve();
+      else pending.reject(new Error('late roster write failure'));
+      h.emitter.emit(
+        'stanza',
+        xml('iq', { type: 'result', id }, xml('query', { xmlns: 'jabber:iq:roster' }))
+      );
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(h.send).toHaveBeenCalledTimes(1);
+      expect(h.broadcasts()).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+  it('late subscribed completion cannot send presence or undo a subsequent unsubscribe', async () => {
+    const h = fixture({ presenceAllowFrom: [alice] });
+    await h.controller.ready(true);
+    h.send.mockClear();
+    const wire = await nativeWire(h);
+    const subscribe = h.controller.handle('subscribe', alice);
+    await vi.advanceTimersByTimeAsync(20000);
+    await subscribe;
+    expect(wire).toHaveLength(1);
+    expect(wire[0].data).toContain('type="subscribed"');
+    const unsubscribe = h.controller.handle('unsubscribe', alice);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(wire).toHaveLength(2);
+    expect(wire[1].data).toContain('type="unsubscribed"');
+    // Reversing callback order cannot reverse bytes already handed to the stream.
+    wire[1].complete();
+    await unsubscribe;
+    wire[0].complete();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(wire).toHaveLength(2);
+    expect(h.presence().map((s) => s.attrs.type)).toEqual(['subscribed', 'unsubscribed']);
+  });
+  it('a timed-out unsubscribe is one-shot and cannot contradict a later explicit subscribe', async () => {
+    const h = fixture({ presenceAllowFrom: [alice] });
+    await h.controller.ready(true);
+    h.send.mockClear();
+    const wire = await nativeWire(h);
+    const unsubscribe = h.controller.handle('unsubscribe', alice);
+    await vi.advanceTimersByTimeAsync(20000);
+    await unsubscribe;
+    const subscribe = h.controller.handle('subscribe', alice);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(wire).toHaveLength(2);
+    expect(wire[0].data).toContain('type="unsubscribed"');
+    expect(wire[1].data).toContain('type="subscribed"');
+    wire[1].complete();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(wire).toHaveLength(3); // One directed presence for the newer explicit approval.
+    wire[2].complete();
+    await subscribe;
+    wire[0].complete();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(wire).toHaveLength(3);
+  });
+  it('a directed presence timeout cannot automatically retry or disclose a newer state after revocation', async () => {
+    const h = fixture({ presenceAllowFrom: [alice] });
+    await h.controller.ready(true);
+    h.send.mockClear();
+    const wire = await nativeWire(h);
+    const probe = h.controller.handle('probe', alice);
+    await vi.advanceTimersByTimeAsync(20000);
+    await probe;
+    expect(wire).toHaveLength(1);
+    h.config.presenceAllowFrom = [];
+    wire[0].complete();
+    await vi.advanceTimersByTimeAsync(10000);
+    await h.controller.handle('probe', alice);
+    expect(wire).toHaveLength(1); // Already queued authorized bytes cannot be recalled.
+  });
+  it('late roster revocation leaves the global gate closed and does not start confirmation IO', async () => {
+    const h = fixture();
+    h.roster([xml('item', { jid: alice, subscription: 'both' })]);
+    const wire = await nativeWire(h);
+    const ready = h.controller.ready(true);
+    await vi.advanceTimersByTimeAsync(20000);
+    await ready;
+    expect(wire).toHaveLength(1);
+    expect(wire[0].data).toContain('type="unsubscribed"');
+    expect(h.broadcasts()).toHaveLength(0);
+    wire[0].complete();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(h.send.mock.calls.filter(([s]) => s.attrs.type === 'get')).toHaveLength(1);
+    expect(h.broadcasts()).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('a fallback roster-push ACK is sent once; timeout/late completion do not retransmit', async () => {
+    const h = fixture();
+    await h.controller.ready(true);
+    h.send.mockClear();
+    const wire = await nativeWire(h);
+    h.emitter.emit(
+      'stanza',
+      xml('iq', { type: 'set', id: 'push-late' }, xml('query', { xmlns: 'jabber:iq:roster' }))
+    );
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(wire).toHaveLength(1);
+    expect(wire[0].data).toContain('type="result"');
+    h.controller.dispose();
+    wire[0].complete();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(wire).toHaveLength(1);
+    expect(h.emitter.listenerCount('stanza')).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

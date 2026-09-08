@@ -32,6 +32,13 @@ export interface OperationalPresence {
   text?: string;
 }
 
+interface PublicationFlight {
+  session: object;
+  signal: AbortSignal;
+  value: OperationalPresence;
+  outcome?: 'sent' | 'failed';
+}
+
 export function derivePresence(
   config: XmppPresenceConfig | undefined,
   status: ChannelAccountSnapshot
@@ -104,7 +111,10 @@ export function createPresenceController(params: {
   let generation = new AbortController();
   let poll: ReturnType<typeof setInterval> | undefined;
   let published: OperationalPresence | undefined;
-  let publishing: object | undefined;
+  // A logical session survives SM resumption; a generation guards callbacks on
+  // one connected stream. Neither a wait timeout nor suspend cancels socket IO.
+  let session: object = {};
+  let publishing: PublicationFlight | undefined;
   // Only in-flight approvals, never a cache of trusted/server subscribers.
   const approvals = new Map<string, object>();
   const current = (signal = generation.signal) =>
@@ -132,7 +142,7 @@ export function createPresenceController(params: {
     return params.send(stanza);
   };
 
-  /** Cancellation removes every owned deadline/listener even if foreign IO hangs. */
+  /** Bounds waiting only. It removes its deadline/listener, never cancels IO. */
   function bounded<T>(run: () => Promise<T>, signal: AbortSignal): Promise<T> {
     return new Promise((resolve, reject) => {
       if (!current(signal)) {
@@ -241,27 +251,48 @@ export function createPresenceController(params: {
 
   async function publish(): Promise<void> {
     const signal = generation.signal;
-    if (!current(signal) || !reconciled || publishing) {
+    if (!current(signal) || !reconciled) {
       return;
     }
-    const token = {};
-    publishing = token;
-    try {
-      const next = read();
-      if (published?.state === next.state && published.text === next.text) {
+    const prior = publishing;
+    if (prior) {
+      if (!prior.outcome || prior.session !== session) {
         return;
       }
-      await bounded(() => send(buildOperationalPresence(next), signal), signal);
-      if (current(signal)) {
-        published = next;
+      // Only a current publisher consumes the result. In particular, after SM
+      // resume an old completion records only its own outcome, not shared state.
+      publishing = undefined;
+      if (prior.outcome === 'sent') {
+        published = prior.value;
       }
+    }
+    try {
+      const next = read();
+      if (!current(signal) || (published?.state === next.state && published.text === next.text)) {
+        return;
+      }
+      const token: PublicationFlight = { session, signal, value: next };
+      publishing = token;
+      // Observe actual settlement independently of bounded(). Keeping this slot
+      // through timeout prevents polling from queuing uncancellable writes.
+      const physical = (async () => send(buildOperationalPresence(next), signal))();
+      void physical.then(
+        () => {
+          token.outcome = 'sent';
+          if (publishing === token && token.session === session && current(token.signal)) {
+            // Coalesce all intervening state/text changes by reading once more.
+            void publish();
+          }
+        },
+        () => {
+          token.outcome = 'failed';
+          // The next normal poll can retry; no immediate rejection/retry loop.
+        }
+      );
+      await bounded(() => physical, signal);
     } catch {
       if (current(signal)) {
         warn();
-      }
-    } finally {
-      if (publishing === token) {
-        publishing = undefined;
       }
     }
   }
@@ -272,7 +303,6 @@ export function createPresenceController(params: {
     poll = undefined;
     generation.abort();
     generation = new AbortController();
-    publishing = undefined;
     approvals.clear();
   }
 
@@ -314,6 +344,8 @@ export function createPresenceController(params: {
     suspend,
     reset() {
       suspend();
+      session = {};
+      publishing = undefined;
       reconciled = false;
       published = undefined;
     },
@@ -421,6 +453,7 @@ export function createPresenceController(params: {
       }
       disposed = true;
       suspend();
+      publishing = undefined;
       published = undefined;
       reconciled = false;
       disposeRosterPush();

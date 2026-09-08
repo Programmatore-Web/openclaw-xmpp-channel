@@ -252,6 +252,99 @@ function redirect(xmpp: NativeClient, host = 'redirect.example.com:5223') {
 }
 
 describe('D5 presence with native SM and account lifecycle', () => {
+  it('P2: native SM may replay a queued stanza without D5 creating an additional unresolved publication', async () => {
+    const h = await fixture();
+    let complete!: () => void;
+    const original = h.send.getMockImplementation()!;
+    h.send.mockImplementation(async (stanza) => {
+      await original(stanza); // Include this write in the installed SM queue.
+      if (stanza.name === 'presence' && !stanza.attrs.to && !stanza.attrs.type && !complete) {
+        await new Promise<void>((resolve) => {
+          complete = resolve;
+        });
+      }
+    });
+    h.status.busy = true;
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(broadcasts(h)).toHaveLength(2);
+    h.outage();
+    h.status.busy = false;
+    h.restore();
+    await vi.advanceTimersByTimeAsync(1010);
+    expect(h.xmpp.status).toBe('online');
+    expect(broadcasts(h)).toHaveLength(3); // Initial, pending DND, native replay of that same DND.
+    expect(h.xmpp.sendMany).toHaveBeenCalledExactlyOnceWith([broadcasts(h)[1]]);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(broadcasts(h)).toHaveLength(3); // No D5 correction until application settlement.
+    complete();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(broadcasts(h)).toHaveLength(4);
+    expect(broadcasts(h)[3].getChildText('show')).toBeNull();
+    expect(rosterGets(h)).toHaveLength(1);
+    expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
+  });
+  it('P2: native SM resume preserves an unresolved broadcast until physical settlement', async () => {
+    const h = await fixture();
+    let complete!: () => void;
+    const original = h.send.getMockImplementation()!;
+    h.send.mockImplementation((stanza) =>
+      stanza.name === 'presence' && !stanza.attrs.to && !stanza.attrs.type && !complete
+        ? new Promise<void>((resolve) => {
+            complete = resolve;
+          })
+        : original(stanza)
+    );
+    h.status.busy = true;
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(broadcasts(h)).toHaveLength(2);
+    h.outage();
+    h.status.busy = false;
+    h.restore();
+    await vi.advanceTimersByTimeAsync(1010);
+    expect(h.xmpp.status).toBe('online');
+    expect(broadcasts(h)).toHaveLength(2);
+    expect(rosterGets(h)).toHaveLength(1);
+    expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
+    complete();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(broadcasts(h)).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(broadcasts(h)).toHaveLength(3);
+    expect(broadcasts(h)[2].getChildText('show')).toBeNull();
+    expect(vi.getTimerCount()).toBe(3); // Native SM ACK, keepalive and one D5 watcher.
+  });
+  it.each(['abort', 'reload', 'terminal'] as const)(
+    'P2: late settlement after %s cannot restart presence',
+    async (action) => {
+      const h = await fixture();
+      let complete!: () => void;
+      const original = h.send.getMockImplementation()!;
+      h.send.mockImplementation((stanza) =>
+        stanza.name === 'presence' && !stanza.attrs.to && !stanza.attrs.type && !complete
+          ? new Promise<void>((resolve) => {
+              complete = resolve;
+            })
+          : original(stanza)
+      );
+      h.status.busy = true;
+      await vi.advanceTimersByTimeAsync(20000);
+      if (action === 'abort') h.controller.abort();
+      else if (action === 'terminal') {
+        reconnectStates.get(accountId)!.attempts = RECONNECT_MAX_ATTEMPTS;
+        h.outage();
+      } else await fixture();
+      // Let the replacement's native SM debounce reach the same steady timer set.
+      await vi.advanceTimersByTimeAsync(action === 'reload' ? 1000 : 0);
+      const timers = vi.getTimerCount();
+      const sends = h.send.mock.calls.length;
+      complete();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.send.mock.calls).toHaveLength(sends);
+      expect(vi.getTimerCount()).toBe(timers);
+      expect(h.xmpp.listenerCount('stanza')).toBe(0);
+      expect(h.xmpp.streamManagement.listenerCount('resumed')).toBe(0);
+    }
+  );
   it('acknowledges each roster push once through the native IQ dispatcher', async () => {
     const h = await fixture();
     h.xmpp._onElement(

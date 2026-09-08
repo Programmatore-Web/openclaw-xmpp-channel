@@ -40,8 +40,10 @@ its declarations and distributed implementation, not a proposed API.
 
 Chosen observation: one client-owned 1000 ms interval, created only after a safe
 fresh reconciliation or safe resumption. The current account can own only one
-such client. Disconnect cancels the interval and all pending D5 IO; resumption
-recreates one interval, retaining the last successful logical publication.
+such client. Disconnect cancels the interval and D5's pending waiters, listeners
+and deadlines; it cannot cancel an application write already handed to xmpp.js.
+Resumption recreates one interval, retaining the last successful logical
+publication and any physically unresolved broadcast.
 No process-wide agent-event listener or second run database is introduced.
 
 The account snapshot describes work routed through this XMPP account. D5 does
@@ -82,6 +84,75 @@ does not record failed writes as success and sends no unchanged poll traffic.
 Directed subscribe/probe replies use a fresh snapshot and do not change broadcast
 deduplication state. There is no plugin-local subscriber cache.
 
+## Physical publication ownership (P2 correction)
+
+The original 5-second `bounded()` waiter released `publishing` in `finally`, even
+if its underlying `send()` Promise remained pending. The 1-second watcher could
+then create another uncancellable write on every later timeout cycle. Fake-time
+regression against PR head `06e29779705570d3d5545314f204c9f0694c9def` starts one
+unresolved initial broadcast and observes 1, 2, 2 and 4 application broadcasts at
+5, 6, 10 and 20 seconds. The corrected controller observes 1 at every checkpoint.
+
+Publication now owns one token containing the logical session identity, the
+connected generation's abort signal, the state/text actually sent, and its eventual
+physical outcome. Only actual `send()` settlement records that outcome. A wait
+timeout reports the fixed warning and removes its deadline/listener, but retains
+the physical serialization barrier. Subsequent polls allocate no additional write
+or deadline while that Promise is pending. No application-wide timeout or session
+retirement is introduced: D2 R2's connection-primitive budgets remain separate.
+
+On current-generation success, the current publisher consumes the token, remembers
+the value actually sent, and reads the latest desired state/text again. Any number
+of intervening changes therefore produces at most one immediate corrective write;
+changes that return to the sent value produce none. Failure is contained and leaves
+the previous successful value intact; the next ordinary poll consumes the failed
+token and can retry once. Failure does not create a recursive retry loop. If the
+write never settles, there is no retry: the contact's last observed state may remain
+stale until the write settles or the session is replaced.
+
+Disconnect aborts the connected generation but keeps the token for possible SM
+resumption of the same logical session. An old completion updates only its own
+outcome: it cannot update `published`, clear a newer token, or schedule a correction.
+After resumption, the current publisher can consume that same-session outcome on
+readiness or the next poll and reconcile it with the current desired value. This
+avoids another application publication while the first is unresolved and avoids
+forgetting what a late successful write actually sent. Fresh reset creates a new
+logical session identity and drops the old slot. Disposal drops the slot and all
+D5 timers/listeners. Old callbacks cannot publish, change runtime status or revive
+resources in either case. Native SM retransmission remains exclusively xmpp.js's
+responsibility, including replay of a stanza already in its queue.
+
+### Audit of other D5 wait budgets
+
+The monitor supplies the original ready-client send with no asynchronous gate
+between the ownership check and invocation. Inspection of installed 0.14.0
+`@xmpp/client-core/lib/Client.js`, `@xmpp/connection/index.js`, TCP/TLS and WebSocket
+transport implementations confirms that an ordinary send hands bytes to the socket
+synchronously before awaiting write completion. The stream orders those bytes;
+late or reordered Promise completions cannot reorder subscription stanzas.
+
+| Site | Timeout / late completion, ordering and disclosure |
+| --- | --- |
+| Broadcast operational presence | Timer-driven repeat was the P2 flaw. One physical token now blocks further broadcasts through timeout and SM resumption; only the latest state is reconsidered after settlement. |
+| Directed subscribe/probe presence | One write per authorized request, with no automatic retry and no broadcast-state mutation. A timed-out completion cannot read or disclose a newer snapshot. Previously authorized bytes already accepted by the transport cannot be recalled after revocation. |
+| `subscribed` | One approval write per accepted request; concurrent approvals for the same bare JID are coalesced while the waiter exists. Timeout exits the handler, so late success cannot send its follow-up presence. A later explicit request is a separate authorization; `unsubscribe` invalidates the approval token and its stanza follows earlier bytes on the stream. |
+| `unsubscribed` for incoming unsubscribe | One acknowledgement per request, no retry or late continuation. A later explicit subscription remains later on the wire even if its Promise completes first. No subscriber cache is retained. |
+| Roster revocation `unsubscribed` | Sequential, one write per denied identity during reconciliation. Timeout ends reconciliation with global publication closed; late success cannot start the confirmation IQ or reopen the gate. No contact deletion. |
+| Fallback roster-push IQ result | One response per valid incoming push, no retry and no status payload. Timeout/late completion cannot reattach its disposed stanza listener. The installed client's native `iqCallee` path owns its own single response and is not a D5 bounded send. |
+| Roster IQ get | One request per reconciliation phase, with an unpredictable ID and generation-owned response listener. Timeout removes the listener and closes the global gate. Late write success/failure or a late result cannot resume the abandoned reconciliation. |
+| Pairing-store lookup | Bounded foreign read, not a send. Timeout denies the request or reconciliation; late completion cannot grant trust or start a stanza. |
+| Graceful stop (250 ms, in monitor) | One synchronous best-effort offline write followed by actual transport teardown. Late completion only settles the already bounded stop waiter; it cannot reconnect or create another stanza. |
+
+The non-broadcast sites have no poll-driven accumulation or late automatic
+continuations, so they retain their existing implementation. Separate incoming
+requests can still cause separate protocol writes; the broadcast lock is not a
+global socket queue or an inbound rate limiter. Generation guards stop work that
+has not been sent; they cannot retract bytes or cancel native send Promises. Tests
+hold installed TCP send callbacks past the deadline, reverse subscription callback
+order, and settle writes after revocation/disposal. Resource tests hold a broadcast
+for an hour of fake time: one unresolved write, one poll timer after the initial
+budget expires, then zero D5 timers/listeners after disposal.
+
 ## Authorization and persistent revocation
 
 Presence trust is a separate capability: explicit owner JIDs, explicit
@@ -113,9 +184,10 @@ clients without the IQ module use a removable stanza responder instead.
 
 Roster requests use a small cancellable stanza listener because installed
 `@xmpp/iq` 0.14.0's public `iqCaller.request/get` lacks cancellation and its
-handler/deadline can outlive client disposal. Every D5 asynchronous operation has
-a 5-second deadline and a generation abort guard; listeners and deadlines are
-removed on completion, error, timeout or cancellation. No timer authorizes
+handler/deadline can outlive client disposal. D5 bounds waiting to 5 seconds with
+a generation abort guard; listeners and deadlines are removed on completion,
+error, timeout or cancellation. Underlying foreign IO is not cancelled by this
+waiting budget; physical broadcast ownership follows the rules above. No timer authorizes
 presence merely because time elapsed. Warning logs use a fixed message without
 roster identities, store paths or exception content.
 
@@ -141,15 +213,16 @@ existing fresh-session path, independent of the roster task.
 
 Native 0.14.0 SM emits `resumed` before `_ready(true)` sets client status to online.
 D5 checks presence on the next microtask, after that native readiness transition.
-It retains the previous successful publication and roster gate. Unchanged state
-sends nothing; a changed state sends one corrective stanza. Carbons, roster fetch
+It retains the previous successful publication, any unresolved physical broadcast
+and the roster gate. Unchanged state sends nothing; a changed state sends one
+corrective stanza once the physical publication slot permits it. Carbons, roster fetch
 and MUC joins are not repeated. Native SM retransmission of unacknowledged stanzas
 is still owned by xmpp.js and is distinct from a new logical publication.
 
 Deliberate current-account shutdown cancels operational tasks synchronously.
 If a current established stream is still online, it starts one best-effort
-`<presence type="unavailable"/>` before transport teardown. The write is bounded
-to 250 ms and uses the original send, not an async initialization gate. Application
+`<presence type="unavailable"/>` before transport teardown. Waiting for the write
+is bounded to 250 ms and uses the original send, not an async initialization gate. Application
 callbacks are already disabled. The transport cannot reconnect, and the D2 total
 5-second disposal budget remains. Stale or disconnected clients cannot take this
 path. Abrupt loss sends neither DND nor synthetic offline; the server determines
