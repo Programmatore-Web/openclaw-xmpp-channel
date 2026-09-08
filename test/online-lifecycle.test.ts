@@ -33,11 +33,13 @@ let emitters: EventEmitter[];
 
 function deferred() {
   let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
   releases.push(resolve);
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function connect(
@@ -82,7 +84,21 @@ async function connect(
     connect: vi.fn().mockResolvedValue(undefined),
     open: vi.fn(async () => startupOnline?.()),
     stop: vi.fn().mockResolvedValue(undefined),
-    send,
+    send: async (stanza: Element) => {
+      if (stanza.getChild('query', 'jabber:iq:roster')) {
+        emitter.emit(
+          'stanza',
+          xml(
+            'iq',
+            { type: 'result', id: stanza.attrs.id },
+            xml('query', { xmlns: 'jabber:iq:roster' })
+          )
+        );
+        return;
+      }
+      if (stanza.attrs.type === 'unavailable') return;
+      return send(stanza);
+    },
   };
   mocks.client.mockReturnValue(xmpp);
   mocks.joinMuc.mockImplementation((_client, room) => {
@@ -118,7 +134,19 @@ async function connect(
   log.info.mockClear();
   log.debug.mockClear();
   setStatus.mockClear();
-  return { online, xmpp, send, emitter, log, setStatus, events, ctx };
+  return {
+    online: (address: { toString(): string }) => {
+      xmpp.status = 'online';
+      online!(address);
+    },
+    xmpp,
+    send,
+    emitter,
+    log,
+    setStatus,
+    events,
+    ctx,
+  };
 }
 
 // Replacements use the real plugin scheduler and emit online during startup,
@@ -145,13 +173,28 @@ function retryClient() {
           xml('sm', { xmlns: 'urn:xmpp:sm:3' })
         )
       );
+      xmpp.status = 'online';
       emitter.emit('online', { toString: () => 'bot@example.com/resource' });
     }),
     stop: vi.fn(async () => {
       emitter.emit('disconnect');
       emitter.emit('offline');
     }),
-    send,
+    send: async (stanza: Element) => {
+      if (stanza.getChild('query', 'jabber:iq:roster')) {
+        emitter.emit(
+          'stanza',
+          xml(
+            'iq',
+            { type: 'result', id: stanza.attrs.id },
+            xml('query', { xmlns: 'jabber:iq:roster' })
+          )
+        );
+        return;
+      }
+      if (stanza.attrs.type === 'unavailable') return;
+      return send(stanza);
+    },
   };
   return { xmpp, sm, send, emitter };
 }
@@ -206,7 +249,7 @@ afterEach(async () => {
 });
 
 describe('online listener lifecycle', () => {
-  it('returns void and waits for SM readiness before the sequential online phases', async () => {
+  it('gates independent online phases on SM readiness, preserving only MUC join ordering', async () => {
     const sm = { enabled: false, enableSent: false };
     const h = await connect(sm, true);
     const carbons = deferred();
@@ -239,19 +282,19 @@ describe('online listener lifecycle', () => {
 
     sm.enabled = true;
     await vi.advanceTimersByTimeAsync(10);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons']);
+    const independent = ['online', 'keepalive', 'carbons', 'connected', rooms[0], 'presence'];
+    expect(h.events).toEqual(expect.arrayContaining(independent));
+    expect(h.events).toHaveLength(independent.length);
     expect(keepaliveIntervals.has(accountId)).toBe(true);
     expect(h.send.mock.calls[0][0].getChild('enable', 'urn:xmpp:carbons:2')).toBeDefined();
-    carbons.resolve();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence']);
-    presence.resolve();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence', 'connected', rooms[0]]);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(h.send).toHaveBeenCalledTimes(2); // Neither unresolved application write is retried.
     expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
     firstJoin.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence', 'connected', ...rooms]);
+    // The second room starts with both Carbons and the initial broadcast still pending.
+    expect(h.events).toEqual(expect.arrayContaining([...independent, rooms[1]]));
+    expect(h.events).toHaveLength(independent.length + 1);
     expect(mocks.joinMuc).toHaveBeenNthCalledWith(
       2,
       h.xmpp,
@@ -269,6 +312,11 @@ describe('online listener lifecycle', () => {
       lastConnectedAt: expect.any(Number),
       lastError: null,
     });
+    carbons.resolve();
+    presence.resolve();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.send).toHaveBeenCalledTimes(2);
+    expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
   });
 
   it('ignores a stale client before logging or starting keepalive', async () => {
@@ -291,16 +339,19 @@ describe('online listener lifecycle', () => {
       const h = await connect(sm, mode === 'enabled');
       h.online({ toString: () => 'bot@example.com/resource' });
       await vi.advanceTimersByTimeAsync(0);
-      expect(h.events).toEqual([
-        'online',
-        'keepalive',
-        'carbons',
-        'presence',
-        'connected',
-        ...rooms,
-      ]);
+      expect(h.events).toEqual(
+        expect.arrayContaining([
+          'online',
+          'keepalive',
+          'carbons',
+          'connected',
+          ...rooms,
+          'presence',
+        ])
+      );
+      expect(h.events).toHaveLength(7);
       expect(h.emitter.listenerCount('nonza')).toBe(0);
-      expect(vi.getTimerCount()).toBe(1); // Only keepalive remains.
+      expect(vi.getTimerCount()).toBe(2); // Keepalive and the single presence watcher.
     }
   );
 
@@ -326,7 +377,10 @@ describe('online listener lifecycle', () => {
     expect(h.send).not.toHaveBeenCalled();
     sm.enableSent = false;
     await vi.advanceTimersByTimeAsync(10);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence', 'connected', ...rooms]);
+    expect(h.events).toEqual(
+      expect.arrayContaining(['online', 'keepalive', 'carbons', 'connected', ...rooms, 'presence'])
+    );
+    expect(h.events).toHaveLength(7);
     expect(h.log.error).not.toHaveBeenCalled();
   });
 
@@ -424,7 +478,7 @@ describe('online listener lifecycle', () => {
       expect(h.send).toHaveBeenCalledTimes(2);
       expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
       expect(h.setStatus).toHaveBeenCalledTimes(2); // Recovery reset, then connected.
-      expect(vi.getTimerCount()).toBe(1);
+      expect(vi.getTimerCount()).toBe(2); // Keepalive and presence watcher.
     }
   );
 
@@ -539,8 +593,8 @@ describe('online listener lifecycle', () => {
       controller.abort();
       pending.resolve();
       await vi.advanceTimersByTimeAsync(0);
-      expect(h.send).toHaveBeenCalledTimes(phase === 'carbons' ? 1 : 2);
-      expect(mocks.joinMuc).toHaveBeenCalledTimes(phase === 'join' ? 1 : 0);
+      expect(h.send).toHaveBeenCalledTimes(2);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(phase === 'join' ? 1 : 2);
     }
   );
 
@@ -563,9 +617,8 @@ describe('online listener lifecycle', () => {
         );
         expect(h.log.error).not.toHaveBeenCalled();
       } else {
-        expect(h.log.error).toHaveBeenCalledTimes(1);
-        expect(h.log.error).toHaveBeenCalledWith(
-          `[${accountId}] XMPP failed to send initial presence: presence failed`
+        expect(h.log.warn).toHaveBeenCalledWith(
+          `[${accountId}] Operational presence publication/authorization unavailable; failing closed`
         );
       }
     }
@@ -588,8 +641,36 @@ describe('online listener lifecycle', () => {
     h.online({ toString: () => 'bot@example.com/resource' });
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.joinMuc).toHaveBeenCalledTimes(3);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2); // Keepalive and presence watcher.
   });
+
+  it.each(['resolve', 'reject'] as const)(
+    'contains a late MUC %s after a fresh generation without touching current status',
+    async (outcome) => {
+      const h = await connect();
+      const oldJoin = deferred();
+      mocks.joinMuc.mockReturnValueOnce(oldJoin.promise);
+      h.online({ toString: () => 'agent@example.com/old' });
+      await vi.advanceTimersByTimeAsync(0);
+      h.online({ toString: () => 'agent@example.com/current' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(3); // One old attempt, then both current rooms.
+      h.setStatus.mockClear();
+      h.log.warn.mockImplementation(() => {
+        throw new Error('late reporter failure');
+      });
+      const sends = h.send.mock.calls.length;
+      if (outcome === 'resolve') oldJoin.resolve();
+      else oldJoin.reject(new Error('old join failure'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(3);
+      expect(h.send).toHaveBeenCalledTimes(sends);
+      expect(h.setStatus).not.toHaveBeenCalled();
+      expect(h.log.warn).not.toHaveBeenCalled();
+      expect(h.log.error).not.toHaveBeenCalled();
+      h.log.warn.mockImplementation(() => {});
+    }
+  );
 
   it.each(['none', 'log', 'status', 'both'])(
     'owns unexpected failure with terminal reporting failure: %s',
@@ -710,7 +791,7 @@ describe('SM readiness recovery', () => {
     expectRecoveryReset();
     expect(h.log.error).toHaveBeenCalledTimes(3);
     expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
-    expect(vi.getTimerCount()).toBe(1); // Only the successful connection's keepalive.
+    expect(vi.getTimerCount()).toBe(2); // Successful connection: keepalive and presence watcher.
   });
 
   it.each(['resolved', 'wedged'])(
@@ -852,6 +933,6 @@ describe('SM readiness recovery', () => {
     await vi.advanceTimersByTimeAsync(10);
     expectRecoveryReset();
     expect(h.log.error).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2); // Keepalive and presence watcher.
   });
 });

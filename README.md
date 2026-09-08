@@ -115,7 +115,72 @@ dropped before session creation or model/tool dispatch.
 `groupPolicy: "open"` is still available as an explicit opt-in for configured
 rooms, including rooms where real occupant JIDs are unavailable.
 
-Presence subscription requests are not approved or reciprocated automatically.
+Presence subscriptions are approved only for explicit owners in `allowFrom`,
+`presenceAllowFrom` viewers, or account-scoped pairing-approved JIDs. DM and group
+policies do not grant presence access. Subscriptions are not reciprocated.
+
+### Agent presence in Thunderbird
+
+| Agent state | XMPP presence | Thunderbird |
+| --- | --- | --- |
+| Available: connected and operational | Ordinary presence, no `show`, priority `1` | Available / Disponibile |
+| Unavailable: connected but busy, blocked, or forced unavailable | `show=dnd`, priority `1`, no `type` | Unavailable / Non disponibile |
+| Offline: no live XMPP session | Session/resource loss; graceful stop sends `type=unavailable` | Offline / Non in linea |
+
+Operational unavailable **keeps the session online**. Offline is never a cosmetic
+mode. If another resource for the same JID remains online, Thunderbird can still
+show that resource's presence.
+
+```json
+{
+  "channels": {
+    "xmpp": {
+      "jid": "agent@example.com",
+      "allowFrom": ["alice@example.com"],
+      "presenceAllowFrom": ["bob@example.com"],
+      "presence": {
+        "mode": "auto",
+        "availableText": "Ready",
+        "unavailableText": "Temporarily unavailable"
+      }
+    }
+  }
+}
+```
+
+This fragment extends an account with credentials already configured.
+`presence.mode` defaults to `auto`: `busy === true`, `activeRuns > 0`,
+`ingressUnavailable === true`, or `lifecycle === "blocked"` selects unavailable;
+otherwise the connected agent is available. Authorized XMPP reply/reaction runs
+update OpenClaw's public run tracker. Status is sampled once per second, so runs
+shorter than that may not appear busy. `available` and `unavailable` force the
+operational state while connected. Neither can make a disconnected session online.
+
+`presence.availableText` and `presence.unavailableText` are optional public text.
+Only configured text is sent; runtime errors and internal reasons are never copied
+into presence. Omit text to send none; an empty string removes inherited text.
+Named accounts inherit each omitted presence field from the root. Their
+`presenceAllowFrom` array replaces the root array when explicitly supplied.
+
+`presenceAllowFrom` adds viewers without granting DM or command access. Owners
+must be explicitly named in `allowFrom`; its wildcard does not make presence
+public. Only an explicit `presenceAllowFrom: ["*"]` permits public presence.
+`dmPolicy: "open"`, `dmAllowlist`, and `groupAllowFrom` do not grant presence access;
+add those people to `presenceAllowFrom` when desired. Presence requests never
+create pairing challenges. Pairing remains a DM flow.
+
+At every fresh login, the plugin reads the server roster and revokes subscribers
+no longer trusted, without deleting their contact entries. Failed reconciliation
+suppresses global operational presence; messaging, configured MUC joins and trusted
+directed replies remain usable. Config changes take effect through account reload.
+After unpairing someone, reload the account to reconcile persistent subscriptions:
+successful SM resumption retains the same logical session and does not reconcile
+again. A server may retain a resumable session temporarily during network loss;
+offline appears when that resource/session actually disappears.
+
+This feature targets direct contacts in Thunderbird. Room-specific occupant
+`show` updates are a follow-up; MUC authorization and join policy are unchanged.
+See [presence design and SDK findings](AGENT-PRESENCE.md) for lifecycle details.
 
 ### Multi-account example
 

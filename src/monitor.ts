@@ -8,6 +8,7 @@
 import { client, xml } from '@xmpp/client';
 import type { Element } from '@xmpp/client';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import { createRunStateMachine } from 'openclaw/plugin-sdk/channel-lifecycle';
 import type { XmppConfig, GatewayStartContext, XmppInboundMessage, Logger } from './types.js';
 import { resolveConnectHost, extractJidDomain, extractUsername, bareJid } from './config-schema.js';
 import { selectPasswordSaslMechanism } from './sasl.js';
@@ -35,6 +36,7 @@ import {
 import { setupPresenceHandlers } from './stanza-handlers.js';
 import { handleInboundMessage, handleInboundReaction } from './inbound.js';
 import { clearMucOccupantIdentities } from './muc-identity.js';
+import { createPresenceController, PRESENCE_STOP_BUDGET_MS } from './presence.js';
 
 // =============================================================================
 // RE-EXPORTS for backward compatibility
@@ -239,7 +241,8 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
       const current = accountLifecycles.get(accountId) === owner;
       const active = activeClients.get(accountId);
       const ownsState = !active || clientDisposers.get(active) === owner.disposeClient;
-      const closing = owner.disposeClient?.();
+      owner.runState?.deactivate();
+      const closing = owner.disposeClient?.(true);
       owner.disposeClient = undefined;
       if (current) {
         accountLifecycles.delete(accountId);
@@ -270,6 +273,14 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     void owner.stop();
   };
   accountLifecycles.set(accountId, owner);
+  owner.runState = createRunStateMachine({
+    abortSignal: ctx.abortSignal,
+    setStatus: (patch) => {
+      if (!ended && accountLifecycles.get(accountId) === owner) {
+        ctx.setStatus?.({ accountId, ...patch });
+      }
+    },
+  });
   ctx.abortSignal?.addEventListener('abort', onAbort, { once: true });
   if (stopped) {
     await stopped;
@@ -365,6 +376,7 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
   let onlineAbort: AbortController | undefined;
   let onlineReady: Promise<boolean> | undefined;
   let established = false;
+  let sessionReady = false;
   let retrying = false;
   let redirectFailed = false;
   let protocolPending = false;
@@ -379,6 +391,8 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
     account.enabled &&
     !reconnectStates.get(accountId)?.aborted;
   const cancelOnline = () => {
+    sessionReady = false;
+    presence.suspend();
     clearTimeout(negotiationTimer);
     negotiationTimer = undefined;
     onlineGeneration++;
@@ -518,6 +532,13 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
   // Also gate sends from outbound adapters and stanza handlers during online
   // initialization. Protocol nonzas and pre-online resource binding pass through.
   const send = xmpp.send.bind(xmpp);
+  const presence = createPresenceController({
+    xmpp,
+    ctx,
+    isCurrent: isActive,
+    isOnline: () => entity.status === 'online',
+    send,
+  });
   xmpp.send = async (stanza) => {
     if (!isActive()) {
       throw new Error('XMPP client is no longer current');
@@ -554,6 +575,7 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       // xmpp.js resumes without emitting online again; SM is already enabled.
       cancelOnline();
       onlineReady = Promise.resolve(true);
+      sessionReady = true;
       established = true;
       protocolPending = false;
       transport.resetRedirects();
@@ -571,6 +593,8 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
         reconnectPending: false,
         lastError: null,
       });
+      // xmpp.js emits resumed immediately before _ready(true) sets online.
+      void Promise.resolve().then(() => presence.ready(false));
     });
 
     onSm('fail', (stanza) => {
@@ -592,24 +616,27 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
     cfg,
     config,
     log,
-    setStatus
+    setStatus,
+    owner.runState
   );
 
   // Setup presence handlers (fail-closed subscriptions, MUC identity/presence)
-  const disposePresence = setupPresenceHandlers(xmpp, accountId, log);
+  const disposePresence = setupPresenceHandlers(xmpp, accountId, log, presence.handle);
 
   // Connection events
   const onOnline = (address: { toString(): string }): void => {
+    let generation = onlineGeneration;
     void (async () => {
       if (!isActive()) {
         return;
       }
       cancelOnline();
+      presence.reset();
       // Native resumed does not emit online. This is a fresh logical session,
       // even on the same entity: old MUC observations cannot authorize traffic
       // during readiness or before new real-JID-bearing presence arrives.
       clearClientRoomState(accountId);
-      const generation = onlineGeneration;
+      generation = onlineGeneration;
       const isCurrent = () => isActive() && generation === onlineGeneration;
       log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
 
@@ -634,6 +661,7 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       // until the SM gate has settled for this current, unaborted generation.
       clearReconnectState(accountId);
       initReconnectState(accountId);
+      sessionReady = true;
       established = true;
       protocolPending = false;
       transport.resetRedirects();
@@ -647,43 +675,43 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       // Start XEP-0199 keepalive pings
       startKeepalive(xmpp, accountId, jidDomain, log);
 
-      // Enable XEP-0280 Message Carbons
-      try {
-        const enableCarbons = xml(
-          'iq',
-          { type: 'set', id: `carbons-${Date.now()}` },
-          xml('enable', { xmlns: 'urn:xmpp:carbons:2' })
-        );
-        await xmpp.send(enableCarbons);
-        log?.debug?.(`[${accountId}] XEP-0280 Message Carbons enabled`);
-      } catch (err) {
-        log?.warn?.(
-          `[${accountId}] Failed to enable carbons: ${err instanceof Error ? err.message : String(err)}`
-        );
+      if (!isCurrent()) {
+        return;
       }
+      // SM readiness is the shared prerequisite. Presence reconciliation starts
+      // independently of optional Carbons; only global presence waits for roster
+      // authorization. Messaging, connected status and MUC do not await either.
+      void presence.ready(true);
 
       if (!isCurrent()) {
         return;
       }
-      // Send initial presence
-      const initialPresence = xml(
-        'presence',
-        {},
-        xml('status', {}, 'OpenClaw Bot Online'),
-        xml('priority', {}, '1')
-      );
-      try {
-        await xmpp.send(initialPresence);
-        log?.debug?.(`[${accountId}] XMPP initial presence sent`);
-      } catch (err) {
-        log?.error?.(
-          `[${accountId}] XMPP failed to send initial presence: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
 
-      if (!isCurrent()) {
-        return;
-      }
+      // One best-effort Carbons attempt per fresh session, never on SM resume.
+      // Ordinary send() has no deadline and cannot be cancelled by a wait budget.
+      // Its settlement owns only current-generation diagnostics, no next phase.
+      void (async () => {
+        try {
+          const enableCarbons = xml(
+            'iq',
+            { type: 'set', id: `carbons-${Date.now()}` },
+            xml('enable', { xmlns: 'urn:xmpp:carbons:2' })
+          );
+          await xmpp.send(enableCarbons);
+          if (isCurrent()) {
+            log?.debug?.(`[${accountId}] XEP-0280 Message Carbons enable sent`);
+          }
+        } catch (err) {
+          if (isCurrent()) {
+            log?.warn?.(
+              `[${accountId}] Failed to enable carbons: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      })().catch(() => {
+        // Optional diagnostic failures cannot escape into lifecycle/status handling.
+      });
+
       // Mark as connected
       setStatus?.({
         accountId,
@@ -708,11 +736,16 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
           log?.debug?.(`[${accountId}] No group rooms configured`);
         }
       } catch (err) {
-        log?.warn?.(
-          `[${accountId}] Room (re)join interrupted (non-fatal, will retry on reconnect): ${err instanceof Error ? err.message : String(err)}`
-        );
+        if (isCurrent()) {
+          log?.warn?.(
+            `[${accountId}] Room (re)join interrupted (non-fatal, will retry on reconnect): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
     })().catch((err) => {
+      if (!isActive() || generation !== onlineGeneration) {
+        return;
+      }
       try {
         log?.error?.(
           `[${accountId}] XMPP online task failed: ${err instanceof Error ? err.message : String(err)}`
@@ -765,10 +798,19 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
 
   // Register disposal before starting any asynchronous operation. Replacement,
   // abort and state cleanup all use this same idempotent path.
-  const dispose = (): Promise<void> => {
+  const dispose = (graceful = false): Promise<void> => {
     if (disposed) {
       return Promise.resolve();
     }
+    // Deliberate stop may already have an aborted signal or disabled account.
+    // Ownership and the actual online stream, not operational mode, decide this.
+    const sendOffline =
+      graceful &&
+      entity.status === 'online' &&
+      sessionReady &&
+      established &&
+      accountLifecycles.get(accountId) === owner &&
+      activeClients.get(accountId) === xmpp;
     disposed = true;
     startupHandoff.abort();
     cancelOnline();
@@ -783,6 +825,7 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
     xmpp.send = send;
     disposeMessages();
     disposePresence();
+    presence.dispose();
     clientDisposers.delete(xmpp);
     if (owner.disposeClient === dispose) {
       owner.disposeClient = undefined;
@@ -794,7 +837,29 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       stopKeepalive(accountId);
       clearClientRoomState(accountId);
     }
-    transport.dispose();
+    let offline: Promise<void> | undefined;
+    if (sendOffline) {
+      // Start the write synchronously while this stream is still current.
+      // All application callbacks are already cancelled; no transport can reopen.
+      offline = new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, PRESENCE_STOP_BUDGET_MS);
+        try {
+          void send(xml('presence', { type: 'unavailable' }))
+            .catch(() => {})
+            .finally(() => {
+              clearTimeout(timer);
+              resolve();
+            });
+        } catch {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    }
+    const retire = () => transport.dispose();
+    if (!offline) {
+      retire();
+    }
     // Bound even a user-supplied/failed stop implementation; transport references
     // are already destroyed and the retired entity cannot create another socket.
     return new Promise<void>((resolve) => {
@@ -809,6 +874,12 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
         resolve();
       }, TRANSPORT_CLOSE_BUDGET_MS);
       void Promise.resolve()
+        .then(() => offline)
+        .then(() => {
+          if (offline) {
+            retire();
+          }
+        })
         .then(() => xmpp.stop())
         .catch((err: unknown) => {
           try {
@@ -879,7 +950,8 @@ export function setupMessageHandler(
   cfg: OpenClawConfig,
   config: XmppConfig,
   log?: Logger,
-  setStatus?: GatewayStartContext['setStatus']
+  setStatus?: GatewayStartContext['setStatus'],
+  runState?: AccountLifecycle['runState']
 ): () => void {
   let disposed = false;
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -1030,6 +1102,7 @@ export function setupMessageHandler(
             config,
             log,
             setStatus,
+            runState,
           });
 
           log?.info?.(`[${accountId}] XEP-0444 Reaction routing completed`);
@@ -1142,7 +1215,7 @@ export function setupMessageHandler(
           })(),
         };
 
-        await handleInboundMessage(message, cfg, accountId, config, log, setStatus);
+        await handleInboundMessage(message, cfg, accountId, config, log, setStatus, runState);
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         log?.error?.(`[${accountId}] Failed to process inbound XMPP stanza: ${error}`);

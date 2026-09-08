@@ -400,10 +400,66 @@
                     }
                   },
                   "description": "Per-group settings for tool policies and mentions"
+                },
+                "presence": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "auto",
+                        "available",
+                        "unavailable"
+                      ]
+                    },
+                    "availableText": {
+                      "type": "string"
+                    },
+                    "unavailableText": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Operational presence (default mode: auto)"
+                },
+                "presenceAllowFrom": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Additional trusted presence viewers; * explicitly permits public presence access"
                 }
               }
             },
             "description": "Named XMPP accounts keyed by account ID"
+          },
+          "presence": {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "available",
+                  "unavailable"
+                ]
+              },
+              "availableText": {
+                "type": "string"
+              },
+              "unavailableText": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "description": "Operational presence (default mode: auto)"
+          },
+          "presenceAllowFrom": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Additional trusted presence viewers; * explicitly permits public presence access"
           }
         }
       },
@@ -634,6 +690,48 @@
         "accounts.*.groupSettings": {
           "label": "Group Settings",
           "help": "Per-room mention and tool-policy override. Leave unset to inherit the root setting."
+        },
+        "presence": {
+          "label": "Operational Presence",
+          "help": "Available or unavailable while connected; offline follows the XMPP session."
+        },
+        "presence.mode": {
+          "label": "Presence Mode",
+          "help": "auto (default) follows runtime availability; available/unavailable force the connected state."
+        },
+        "presence.availableText": {
+          "label": "Available Status Text",
+          "help": "Optional public text for trusted presence viewers. Use safe text only."
+        },
+        "presence.unavailableText": {
+          "label": "Unavailable Status Text",
+          "help": "Optional public text for trusted presence viewers. Use safe text only."
+        },
+        "presenceAllowFrom": {
+          "label": "Presence Viewers",
+          "help": "Additional trusted bare JIDs. Only an explicit * here makes presence public.",
+          "placeholder": "alice@example.com"
+        },
+        "accounts.*.presence": {
+          "label": "Operational Presence",
+          "help": "Available or unavailable while connected; offline follows the XMPP session."
+        },
+        "accounts.*.presence.mode": {
+          "label": "Presence Mode",
+          "help": "auto (default) follows runtime availability; available/unavailable force the connected state."
+        },
+        "accounts.*.presence.availableText": {
+          "label": "Available Status Text",
+          "help": "Optional public text for trusted presence viewers. Use safe text only."
+        },
+        "accounts.*.presence.unavailableText": {
+          "label": "Unavailable Status Text",
+          "help": "Optional public text for trusted presence viewers. Use safe text only."
+        },
+        "accounts.*.presenceAllowFrom": {
+          "label": "Presence Viewers",
+          "help": "Additional trusted bare JIDs. Only an explicit * here makes presence public.",
+          "placeholder": "alice@example.com"
         }
       }
     }

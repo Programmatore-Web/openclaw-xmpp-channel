@@ -319,7 +319,7 @@ describe('presence listener rejection ownership', () => {
     expect(h.send).not.toHaveBeenCalled();
   });
 
-  it.each(['probe', 'unsubscribe'])(
+  it.each(['unsubscribe'])(
     'handles rejected %s sends and remains usable',
     async (type) => {
       const h = harness();
@@ -352,7 +352,7 @@ describe('presence listener rejection ownership', () => {
       throw new Error('logger failed');
     });
     expect(
-      h.listener(xml('presence', { from: 'user@example.com', type: 'probe' }))
+      h.listener(xml('presence', { from: 'user@example.com', type: 'unsubscribe' }))
     ).toBeUndefined();
     await vi.advanceTimersByTimeAsync(0);
     expect(h.warn).toHaveBeenCalledTimes(2);

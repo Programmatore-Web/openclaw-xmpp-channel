@@ -57,6 +57,27 @@ export const xmppConfigUiHints: Record<string, ChannelConfigUiHint> = {
     ...standardHints.dmPolicy,
     help: 'Direct-message policy. The default is pairing, approvals are account-scoped, and open is an explicit choice.',
   },
+  presence: {
+    label: 'Operational Presence',
+    help: 'Available or unavailable while connected; offline follows the XMPP session.',
+  },
+  'presence.mode': {
+    label: 'Presence Mode',
+    help: 'auto (default) follows runtime availability; available/unavailable force the connected state.',
+  },
+  'presence.availableText': {
+    label: 'Available Status Text',
+    help: 'Optional public text for trusted presence viewers. Use safe text only.',
+  },
+  'presence.unavailableText': {
+    label: 'Unavailable Status Text',
+    help: 'Optional public text for trusted presence viewers. Use safe text only.',
+  },
+  presenceAllowFrom: {
+    label: 'Presence Viewers',
+    help: 'Additional trusted bare JIDs. Only an explicit * here makes presence public.',
+    placeholder: 'alice@example.com',
+  },
   allowFrom: {
     label: 'Owner JIDs',
     help: 'Static owner bare JIDs.',
@@ -238,3 +259,13 @@ export const xmppConfigUiHints: Record<string, ChannelConfigUiHint> = {
     help: 'Per-room mention and tool-policy override. Leave unset to inherit the root setting.',
   },
 };
+
+for (const key of [
+  'presence',
+  'presence.mode',
+  'presence.availableText',
+  'presence.unavailableText',
+  'presenceAllowFrom',
+]) {
+  xmppConfigUiHints[`accounts.*.${key}`] = { ...xmppConfigUiHints[key] };
+}

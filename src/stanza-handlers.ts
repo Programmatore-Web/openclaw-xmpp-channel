@@ -19,9 +19,14 @@ import { normalizeXmppRoomJid } from './normalize.js';
 export function setupPresenceHandlers(
   xmpp: ReturnType<typeof client>,
   accountId: string,
-  log?: Logger
+  log?: Logger,
+  handleOperationalPresence?: (type: string, from: string) => Promise<void>
 ): () => void {
+  let disposed = false;
   const onStanza = (stanza: Element): void => {
+    if (disposed) {
+      return;
+    }
     void (async () => {
       try {
         if (!stanza.is('presence')) {
@@ -65,18 +70,9 @@ export function setupPresenceHandlers(
           }
         }
 
-        // Presence subscriptions are never approved implicitly. Roster changes
-        // remain an explicit administrator operation outside this channel.
-        if (type === 'subscribe') {
-          log?.info?.(`[${accountId}] Ignoring unsolicited presence subscription from ${fromBare}`);
+        if (['subscribe', 'probe', 'unsubscribe'].includes(type) && handleOperationalPresence) {
+          await handleOperationalPresence(type, from);
           return;
-        }
-
-        // Handle probe - respond with current presence
-        if (type === 'probe') {
-          log?.debug?.(`[${accountId}] XMPP presence probe from ${fromBare} - responding`);
-          const presence = xml('presence', { to: fromBare });
-          await xmpp.send(presence);
         }
 
         // Handle unsubscribe - acknowledge it
@@ -107,6 +103,7 @@ export function setupPresenceHandlers(
   };
   xmpp.on('stanza', onStanza);
   return () => {
+    disposed = true;
     xmpp.off('stanza', onStanza);
   };
 }

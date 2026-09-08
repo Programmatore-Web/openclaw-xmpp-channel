@@ -7,6 +7,7 @@
 
 import type { client } from '@xmpp/client';
 import type { GatewayStartContext, Logger } from './types.js';
+import type { createRunStateMachine } from 'openclaw/plugin-sdk/channel-lifecycle';
 import { clearMucOccupantIdentities } from './muc-identity.js';
 
 // =============================================================================
@@ -56,7 +57,8 @@ export interface AccountLifecycle {
   service?: string;
   stop(): Promise<void>;
   start(): Promise<void>;
-  disposeClient?: () => Promise<void>;
+  disposeClient?: (graceful?: boolean) => Promise<void>;
+  runState?: ReturnType<typeof createRunStateMachine>;
 }
 export const accountLifecycles = new Map<string, AccountLifecycle>();
 export const clientDisposers = new WeakMap<ReturnType<typeof client>, () => Promise<void>>();

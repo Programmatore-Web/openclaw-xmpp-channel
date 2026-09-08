@@ -1,4 +1,12 @@
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import type { ChannelAccountSnapshot as SdkAccountSnapshot } from 'openclaw/plugin-sdk/channel-contract';
+
+/** Connected operational presence; offline belongs to the XMPP session. */
+export interface XmppPresenceConfig {
+  mode?: 'auto' | 'available' | 'unavailable';
+  availableText?: string;
+  unavailableText?: string;
+}
 
 /**
  * Direct chat policy type
@@ -80,6 +88,9 @@ export interface XmppConfig {
   groupPolicy?: GroupPolicy;
   /** Bot owner / trusted JIDs — always have direct chat access */
   allowFrom?: string[];
+  /** Additional presence viewers; independent of DM and group authorization. */
+  presenceAllowFrom?: string[];
+  presence?: XmppPresenceConfig;
   /** DM allowlist — additional JIDs allowed to direct-chat when dmPolicy is 'allowlist' (owners always have access regardless) */
   dmAllowlist?: string[];
   /** Allowed sender JIDs for groups (if different from allowFrom) */
@@ -177,7 +188,7 @@ export interface GatewayStartContext {
   log?: Logger;
   runtime?: unknown;
   setStatus?: (patch: ChannelAccountStatusPatch) => void;
-  getStatus?: () => ChannelAccountStatusPatch;
+  getStatus?: () => SdkAccountSnapshot;
 }
 
 /**
