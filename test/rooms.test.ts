@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import { xml } from '@xmpp/client';
 import type { client, Element } from '@xmpp/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -370,4 +371,34 @@ describe('presence listener rejection ownership', () => {
     expect(h.send).not.toHaveBeenCalled();
     expect(h.warn).not.toHaveBeenCalled();
   });
+});
+
+describe('MUC lifecycle cancellation', () => {
+  it.each(['leave delay', 'join confirmation'])(
+    'disposes the %s without rejoining or retaining abort listeners',
+    async (phase) => {
+      const controller = new AbortController();
+      const send = vi.fn().mockResolvedValue(undefined);
+      const xmpp = { send } as unknown as ReturnType<typeof client>;
+      const task = joinMuc(
+        xmpp,
+        'room@conference.example.com',
+        'bot',
+        undefined,
+        accountId,
+        true,
+        controller.signal
+      );
+      await vi.advanceTimersByTimeAsync(phase === 'leave delay' ? 0 : 1000);
+      expect(send).toHaveBeenCalledTimes(phase === 'leave delay' ? 1 : 2);
+      controller.abort();
+      await task;
+      expect(pendingMucJoins.size).toBe(0);
+      expect(joinedRooms.has(accountId)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(send).toHaveBeenCalledTimes(phase === 'leave delay' ? 1 : 2);
+    }
+  );
 });

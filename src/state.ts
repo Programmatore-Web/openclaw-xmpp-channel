@@ -6,7 +6,7 @@
  */
 
 import type { client } from '@xmpp/client';
-import type { Logger } from './types.js';
+import type { GatewayStartContext, Logger } from './types.js';
 import { clearMucOccupantIdentities } from './muc-identity.js';
 
 // =============================================================================
@@ -49,6 +49,30 @@ export const MUC_LEAVE_WAIT_MS = 1000;
 
 // Active XMPP clients by accountId
 export const activeClients = new Map<string, ReturnType<typeof client>>();
+
+/** Account ownership survives removal of activeClients during OpenClaw cleanup. */
+export interface AccountLifecycle {
+  ctx: GatewayStartContext;
+  service?: string;
+  stop(): Promise<void>;
+  start(): Promise<void>;
+  disposeClient?: () => Promise<void>;
+}
+export const accountLifecycles = new Map<string, AccountLifecycle>();
+export const clientDisposers = new WeakMap<ReturnType<typeof client>, () => Promise<void>>();
+
+/** Cancel resources whose callbacks would otherwise act on a later client. */
+export function clearClientRoomState(accountId: string): void {
+  joinedRooms.delete(accountId);
+  clearMucOccupantIdentities(accountId);
+  for (const [key, pending] of pendingMucJoins) {
+    if (key.startsWith(`${accountId}:`)) {
+      clearTimeout(pending.timeout);
+      pendingMucJoins.delete(key);
+      pending.resolve();
+    }
+  }
+}
 
 // Track rooms that returned "gone" error to avoid retry loops
 export const goneRooms = new Set<string>();
@@ -163,6 +187,9 @@ export function getServerMessageId(
  */
 export function cleanupAccountState(accountId: string, log?: Logger): void {
   log?.debug?.(`[${accountId}] Cleaning up account state...`);
+
+  // Dispose the monitor before removing its state, independent of abort order.
+  void accountLifecycles.get(accountId)?.stop();
 
   // Stop and remove client
   const xmpp = activeClients.get(accountId);

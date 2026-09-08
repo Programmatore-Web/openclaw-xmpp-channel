@@ -13,7 +13,16 @@ import { resolveConnectHost, extractJidDomain, extractUsername, bareJid } from '
 import { selectPasswordSaslMechanism } from './sasl.js';
 
 // Import from split modules
-import { activeClients, reconnectStates, sentMessageIds } from './state.js';
+import {
+  activeClients,
+  reconnectStates,
+  sentMessageIds,
+  accountLifecycles,
+  clientDisposers,
+  clearClientRoomState,
+  type AccountLifecycle,
+} from './state.js';
+import { governTransport, TRANSPORT_CLOSE_BUDGET_MS } from './transport.js';
 import { joinMuc } from './rooms.js';
 import { startKeepalive, stopKeepalive } from './keepalive.js';
 import {
@@ -51,10 +60,13 @@ interface StartableXmppClient {
   reconnect?: { stop(): void };
   connect(service: string): Promise<void>;
   open(options: { domain: string; lang?: string }): Promise<void>;
+  disconnect(): Promise<void>;
   on(event: 'online', handler: () => void): void;
   on(event: 'error', handler: (error: Error) => void): void;
-  off(event: 'online', handler: () => void): void;
+  on(event: 'disconnect', handler: () => void): void;
+  off(event: 'online', handler: (address: { toString(): string }) => void): void;
   off(event: 'error', handler: (error: Error) => void): void;
+  off(event: 'disconnect', handler: () => void): void;
 }
 
 /**
@@ -62,10 +74,16 @@ interface StartableXmppClient {
  *
  * @xmpp/connection 0.14.0 creates its online Promise before awaiting a separate
  * open Promise. If one entity error rejects both, start() exposes the open
- * rejection but abandons the online rejection. Keep the library's connection
- * and reconnect behavior while owning both lower-level operations here.
+ * rejection but abandons the online rejection. Own the lower-level operations
+ * here, rejecting startup directly on transport loss or cancellation.
  */
-function startXmppClient(xmpp: ReturnType<typeof client>): Promise<void> {
+function startXmppClient(
+  xmpp: ReturnType<typeof client>,
+  isCurrent: () => boolean,
+  signal: AbortSignal | undefined,
+  handoff: AbortSignal,
+  run: () => Promise<void>
+): Promise<void> {
   const entity = xmpp as unknown as StartableXmppClient;
 
   return new Promise<void>((resolve, reject) => {
@@ -78,6 +96,9 @@ function startXmppClient(xmpp: ReturnType<typeof client>): Promise<void> {
     const cleanup = () => {
       entity.off('online', onOnline);
       entity.off('error', onError);
+      entity.off('disconnect', onDisconnect);
+      signal?.removeEventListener('abort', onAbort);
+      handoff.removeEventListener('abort', onHandoff);
     };
     const settle = (complete: () => void) => {
       if (settled) {
@@ -89,17 +110,25 @@ function startXmppClient(xmpp: ReturnType<typeof client>): Promise<void> {
     };
     const onOnline = () => settle(resolve);
     const onError = (error: Error) => settle(() => reject(error));
+    const onDisconnect = () => onError(new Error('XMPP disconnected before online'));
+    const onAbort = () => onError(new Error('XMPP startup cancelled'));
+    // Redirect governance takes over both success and failure. Release this
+    // waiter's listeners before its intentional disconnect can reject startup.
+    const onHandoff = () => settle(resolve);
 
     entity.on('online', onOnline);
     entity.on('error', onError);
+    entity.on('disconnect', onDisconnect);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    handoff.addEventListener('abort', onHandoff, { once: true });
+    if (!isCurrent()) {
+      onAbort();
+      return;
+    }
 
-    const { service, domain, lang } = entity.options;
-    void entity
-      .connect(service)
-      .then(() => entity.open({ domain, lang }))
-      .catch((error: unknown) =>
-        settle(() => reject(error instanceof Error ? error : new Error(String(error))))
-      );
+    void run().catch((error: unknown) =>
+      settle(() => reject(error instanceof Error ? error : new Error(String(error))))
+    );
   });
 }
 
@@ -187,19 +216,95 @@ export function getActiveClient(accountId: string): ReturnType<typeof client> | 
  * Returns a promise that stays pending until the connection is stopped
  */
 export async function startXmppConnection(ctx: GatewayStartContext): Promise<void> {
-  const { account, cfg, abortSignal, log, setStatus } = ctx;
+  const accountId = ctx.accountId ?? ctx.account.accountId ?? 'default';
+  if (!ctx.account.config.jid || !ctx.account.config.password) {
+    throw new Error('XMPP jid and password are required');
+  }
+  const previous = accountLifecycles.get(accountId);
+  const stopped = previous?.stop();
+  let finish!: () => void;
+  const lifetime = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  let ended = false;
+  const owner: AccountLifecycle = {
+    ctx,
+    start: () => startClient(ctx, owner),
+    async stop() {
+      if (ended) {
+        return;
+      }
+      ended = true;
+      ctx.abortSignal?.removeEventListener('abort', onAbort);
+      const current = accountLifecycles.get(accountId) === owner;
+      const active = activeClients.get(accountId);
+      const ownsState = !active || clientDisposers.get(active) === owner.disposeClient;
+      const closing = owner.disposeClient?.();
+      owner.disposeClient = undefined;
+      if (current) {
+        accountLifecycles.delete(accountId);
+        if (ownsState) {
+          abortReconnect(accountId);
+          clearReconnectState(accountId);
+          stopKeepalive(accountId);
+          clearClientRoomState(accountId);
+          try {
+            ctx.setStatus?.({
+              accountId,
+              running: false,
+              connected: false,
+              reconnectNextAt: null,
+              reconnectPending: false,
+              lastStopAt: Date.now(),
+            });
+          } catch {
+            /* Termination remains final if status reporting fails. */
+          }
+        }
+      }
+      finish();
+      await closing;
+    },
+  };
+  const onAbort = () => {
+    void owner.stop();
+  };
+  accountLifecycles.set(accountId, owner);
+  ctx.abortSignal?.addEventListener('abort', onAbort, { once: true });
+  if (stopped) {
+    await stopped;
+  }
+  if (accountLifecycles.get(accountId) === owner) {
+    if (!reconnectStates.has(accountId) || reconnectStates.get(accountId)?.aborted) {
+      initReconnectState(accountId);
+    }
+    try {
+      await owner.start();
+    } catch (error) {
+      await owner.stop();
+      throw error;
+    }
+  }
+  if (ctx.abortSignal?.aborted || !ctx.account.enabled) {
+    await owner.stop();
+  }
+  return lifetime;
+}
+
+/** Create one client; replacement never waits on or retains another account lifetime. */
+async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): Promise<void> {
+  const { account, cfg, abortSignal, log } = ctx;
   const accountId = ctx.accountId ?? account.accountId ?? 'default';
   const config = account.config;
-
-  log?.debug?.(`[${accountId}] Gateway context: hasSetStatus=${!!setStatus}`);
-
   if (!config.jid || !config.password) {
     throw new Error('XMPP jid and password are required');
   }
-
-  if (!reconnectStates.has(accountId)) {
-    initReconnectState(accountId);
-  }
+  let disposed = false;
+  const setStatus: GatewayStartContext['setStatus'] = (patch) => {
+    if (!disposed && accountLifecycles.get(accountId) === owner) {
+      ctx.setStatus?.(patch);
+    }
+  };
 
   const jidDomain = extractJidDomain(config.jid);
   const connectHost = resolveConnectHost(config);
@@ -221,6 +326,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     setStatus({
       accountId,
       running: true,
+      terminalDisconnect: undefined,
       lastStartAt: Date.now(),
       lastError: null,
     });
@@ -229,7 +335,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   }
 
   const xmpp = client({
-    service: `xmpp://${connectHost}:${config.port ?? 5222}`,
+    service: owner.service ?? `xmpp://${connectHost}:${config.port ?? 5222}`,
     domain: jidDomain,
     username,
     credentials: async (authenticate, mechanisms, _fast, entity) => {
@@ -244,6 +350,12 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     resource: sessionResource,
   });
 
+  // @xmpp/reconnect 0.14.0 installs a fixed-delay disconnect listener at creation.
+  // The plugin owns ALL retry timers. Stopping this scheduler does not stop the
+  // entity or clear SM state; connect/open below preserve the native resume path.
+  const entity = xmpp as unknown as StartableXmppClient;
+  entity.reconnect?.stop();
+
   // Store client for outbound messaging
   activeClients.set(accountId, xmpp);
 
@@ -252,8 +364,23 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   let onlineGeneration = 0;
   let onlineAbort: AbortController | undefined;
   let onlineReady: Promise<boolean> | undefined;
-  const isActive = () => activeClients.get(accountId) === xmpp && !abortSignal?.aborted;
+  let established = false;
+  let retrying = false;
+  let redirectFailed = false;
+  let protocolPending = false;
+  let negotiationTimer: ReturnType<typeof setTimeout> | undefined;
+  const startupHandoff = new AbortController();
+
+  const isActive = () =>
+    !disposed &&
+    accountLifecycles.get(accountId) === owner &&
+    activeClients.get(accountId) === xmpp &&
+    !abortSignal?.aborted &&
+    account.enabled &&
+    !reconnectStates.get(accountId)?.aborted;
   const cancelOnline = () => {
+    clearTimeout(negotiationTimer);
+    negotiationTimer = undefined;
     onlineGeneration++;
     onlineAbort?.abort();
     if (activeClients.get(accountId) === xmpp) {
@@ -262,6 +389,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   };
   const onStreamElement = (element: StreamElement) => {
     if (element.is('features', 'http://etherx.jabber.org/streams')) {
+      protocolPending = true;
       smAdvertised = Boolean(element.getChild('sm', 'urn:xmpp:sm:3'));
     }
   };
@@ -270,15 +398,130 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     smAdvertised = undefined;
     // Resource binding on the next stream must be able to send its own IQ.
     onlineReady = undefined;
+    if (protocolPending) {
+      protocolPending = false;
+      // Native SM procedure listeners are not cancelled by disconnect. Never
+      // expose the next stream to an unfinished procedure from the old stream.
+      transport.retire();
+    }
+    if (!isActive()) {
+      return;
+    }
+    setStatus?.({ accountId, connected: false, lastDisconnect: { at: Date.now() } });
+    if (!retrying) {
+      scheduleReconnect(accountId, ctx, log, sameClientReconnect);
+    }
+  };
+  const sameClientReconnect = {
+    client: xmpp,
+    canReuse: () => established && transport.reusable,
+    async run(redirected = false) {
+      if (!isActive() || retrying) {
+        return;
+      }
+      retrying = true;
+      redirectFailed = false;
+      beginNegotiation();
+      try {
+        await transport.run(reconnectService, redirected);
+      } catch (err) {
+        if (!isActive()) {
+          return;
+        }
+        cancelOnline();
+        setStatus?.({
+          accountId,
+          connected: false,
+          lastError: err instanceof Error ? err.message : String(err),
+        });
+        try {
+          await transport.close();
+        } catch {
+          /* Timed-out entities are replaced. */
+        }
+      } finally {
+        retrying = false;
+        if (
+          isActive() &&
+          (redirectFailed || !transport.reusable || entity.status === 'disconnect')
+        ) {
+          scheduleReconnect(accountId, ctx, log, sameClientReconnect);
+        }
+      }
+    },
+  };
+  let reconnectService = entity.options.service;
+  const transport = governTransport(xmpp, isActive, (service) => {
+    // Initial redirects remain in the same governed connection attempt. The
+    // startup waiter must neither schedule a retry nor clear its new deadline.
+    // Invalid targets also transfer failure ownership here, exactly once.
+    startupHandoff.abort();
+    if (service !== undefined) {
+      reconnectService = service;
+      owner.service = service;
+    } else {
+      redirectFailed = true;
+    }
+    cancelOnline();
+    setStatus?.({ accountId, connected: false, lastDisconnect: { at: Date.now() } });
+    // Existing recovery keeps its delay/attempt count and uses the redirected
+    // service. A healthy current stream may redirect immediately, serially.
+    if (retrying || reconnectStates.get(accountId)?.timer) {
+      void transport.close().catch(() => {});
+      return;
+    }
+    retrying = true;
+    void (async () => {
+      try {
+        await transport.close();
+      } catch {
+        /* Schedule replacement below. */
+      }
+      retrying = false;
+      if (!isActive()) {
+        return;
+      }
+      if (redirectFailed || !transport.reusable) {
+        scheduleReconnect(accountId, ctx, log, sameClientReconnect);
+      } else {
+        await sameClientReconnect.run(true);
+      }
+    })().catch((err: unknown) => {
+      if (isActive()) {
+        setStatus?.({ accountId, lastError: String(err) });
+        scheduleReconnect(accountId, ctx, log, sameClientReconnect);
+      }
+    });
+  });
+  const beginNegotiation = () => {
+    clearTimeout(negotiationTimer);
+    // Same deadline as the existing SM readiness gate, covering a stream that
+    // never reaches either online or resumed after connect/open succeeded.
+    negotiationTimer = setTimeout(() => {
+      negotiationTimer = undefined;
+      if (!isActive()) {
+        return;
+      }
+      established = false;
+      setStatus?.({
+        accountId,
+        connected: false,
+        lastError: 'XMPP session negotiation exceeded 10000ms',
+      });
+      transport.retire();
+      scheduleReconnect(accountId, ctx, log, sameClientReconnect);
+    }, 10_000);
   };
   smClient.on('element', onStreamElement);
   smClient.on('disconnect', onDisconnect);
-  abortSignal?.addEventListener('abort', cancelOnline);
 
   // Also gate sends from outbound adapters and stanza handlers during online
   // initialization. Protocol nonzas and pre-online resource binding pass through.
   const send = xmpp.send.bind(xmpp);
   xmpp.send = async (stanza) => {
+    if (!isActive()) {
+      throw new Error('XMPP client is no longer current');
+    }
     const generation = onlineGeneration;
     if (onlineReady && ['iq', 'message', 'presence'].includes(stanza.name)) {
       if (!(await onlineReady) || generation !== onlineGeneration || !isActive()) {
@@ -293,49 +536,79 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     xmpp as unknown as {
       streamManagement?: {
         on?: (event: string, handler: (stanza?: Element) => void) => void;
+        off?: (event: string, handler: (stanza?: Element) => void) => void;
       };
     }
   ).streamManagement;
+  const smListeners: Array<() => void> = [];
+  const onSm = (event: string, handler: (stanza?: Element) => void) => {
+    streamManagement?.on?.(event, handler);
+    smListeners.push(() => streamManagement?.off?.(event, handler));
+  };
 
   if (streamManagement && typeof streamManagement.on === 'function') {
-    streamManagement.on('resumed', () => {
+    onSm('resumed', () => {
       if (!isActive()) {
         return;
       }
       // xmpp.js resumes without emitting online again; SM is already enabled.
       cancelOnline();
       onlineReady = Promise.resolve(true);
+      established = true;
+      protocolPending = false;
+      transport.resetRedirects();
       clearReconnectState(accountId);
       initReconnectState(accountId);
       startKeepalive(xmpp, accountId, jidDomain, log);
       log?.info?.(`[${accountId}] XEP-0198 Stream Management: session resumed`);
-      setStatus?.({ accountId, connected: true, lastConnectedAt: Date.now() });
+      setStatus?.({
+        accountId,
+        running: true,
+        connected: true,
+        lastConnectedAt: Date.now(),
+        reconnectAttempts: 0,
+        reconnectNextAt: null,
+        reconnectPending: false,
+        lastError: null,
+      });
     });
 
-    streamManagement.on('fail', (stanza) => {
+    onSm('fail', (stanza) => {
       log?.warn?.(
         `[${accountId}] XEP-0198 Stream Management: stanza failed to send: ${stanza?.toString()?.slice(0, 100)}`
       );
     });
 
-    streamManagement.on('ack', () => {
+    onSm('ack', () => {
       log?.debug?.(`[${accountId}] XEP-0198 Stream Management: stanza acknowledged`);
     });
   }
 
   // Setup message stanza handler
-  setupMessageHandler(xmpp, accountId, nickname, cfg, config, log, setStatus);
+  const disposeMessages = setupMessageHandler(
+    xmpp,
+    accountId,
+    nickname,
+    cfg,
+    config,
+    log,
+    setStatus
+  );
 
   // Setup presence handlers (fail-closed subscriptions, MUC identity/presence)
-  setupPresenceHandlers(xmpp, accountId, log);
+  const disposePresence = setupPresenceHandlers(xmpp, accountId, log);
 
   // Connection events
-  xmpp.on('online', (address): void => {
+  const onOnline = (address: { toString(): string }): void => {
     void (async () => {
       if (!isActive()) {
         return;
       }
       cancelOnline();
+      // Native resumed does not emit online. This is a fresh logical session,
+      // even on the same entity: old MUC observations cannot authorize traffic
+      // during readiness or before new real-JID-bearing presence arrives.
+      clearClientRoomState(accountId);
       const generation = onlineGeneration;
       const isCurrent = () => isActive() && generation === onlineGeneration;
       log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
@@ -350,10 +623,10 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
         if (!isCurrent()) {
           return;
         }
-        (xmpp as unknown as StartableXmppClient).reconnect?.stop();
+        established = false;
         // Plugin backoff owns recovery, including its bounded stale-client stop.
         // Do not create another teardown task or await a potentially wedged stop.
-        scheduleReconnect(accountId, ctx, log);
+        scheduleReconnect(accountId, ctx, log, sameClientReconnect);
         throw err;
       }
 
@@ -361,6 +634,15 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
       // until the SM gate has settled for this current, unaborted generation.
       clearReconnectState(accountId);
       initReconnectState(accountId);
+      established = true;
+      protocolPending = false;
+      transport.resetRedirects();
+      setStatus?.({
+        accountId,
+        reconnectAttempts: 0,
+        reconnectNextAt: null,
+        reconnectPending: false,
+      });
 
       // Start XEP-0199 keepalive pings
       startKeepalive(xmpp, accountId, jidDomain, log);
@@ -420,7 +702,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
             if (!isCurrent()) {
               return;
             }
-            await joinMuc(xmpp, room, nickname, log, accountId, true);
+            await joinMuc(xmpp, room, nickname, log, accountId, true, onlineAbort?.signal);
           }
         } else {
           log?.debug?.(`[${accountId}] No group rooms configured`);
@@ -444,11 +726,13 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
         // Status reporting is independent and best-effort at this boundary.
       }
     });
-  });
+  };
+  xmpp.on('online', onOnline);
 
-  xmpp.on('offline', () => {
+  const onOffline = () => {
+    established = false;
     onDisconnect();
-    if (activeClients.get(accountId) !== xmpp) {
+    if (!isActive()) {
       return;
     }
     log?.info?.(`[${accountId}] XMPP offline`);
@@ -465,84 +749,119 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
 
     const reconnectState = reconnectStates.get(accountId);
     if (!reconnectState?.aborted) {
-      scheduleReconnect(accountId, ctx, log);
+      scheduleReconnect(accountId, ctx, log, sameClientReconnect);
     }
-  });
+  };
+  xmpp.on('offline', onOffline);
 
-  xmpp.on('error', (err) => {
-    if (activeClients.get(accountId) !== xmpp) {
+  const onError = (err: Error) => {
+    if (!isActive()) {
       return;
     }
     log?.error?.(`[${accountId}] XMPP error: ${err.message}`);
     setStatus?.({ accountId, lastError: err.message });
-  });
+  };
+  xmpp.on('error', onError);
 
-  // Start connection
+  // Register disposal before starting any asynchronous operation. Replacement,
+  // abort and state cleanup all use this same idempotent path.
+  const dispose = (): Promise<void> => {
+    if (disposed) {
+      return Promise.resolve();
+    }
+    disposed = true;
+    startupHandoff.abort();
+    cancelOnline();
+    smClient.off('element', onStreamElement);
+    smClient.off('disconnect', onDisconnect);
+    for (const remove of smListeners) {
+      remove();
+    }
+    entity.off('online', onOnline);
+    xmpp.off('offline', onOffline);
+    entity.off('error', onError);
+    xmpp.send = send;
+    disposeMessages();
+    disposePresence();
+    clientDisposers.delete(xmpp);
+    if (owner.disposeClient === dispose) {
+      owner.disposeClient = undefined;
+    }
+    if (activeClients.get(accountId) === xmpp) {
+      activeClients.delete(accountId);
+    }
+    if (accountLifecycles.get(accountId) === owner && !activeClients.has(accountId)) {
+      stopKeepalive(accountId);
+      clearClientRoomState(accountId);
+    }
+    transport.dispose();
+    // Bound even a user-supplied/failed stop implementation; transport references
+    // are already destroyed and the retired entity cannot create another socket.
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        try {
+          log?.warn?.(
+            `[${accountId}] Stale client stop exceeded ${TRANSPORT_CLOSE_BUDGET_MS}ms; abandoning it`
+          );
+        } catch {
+          /* Teardown completion must not depend on logging. */
+        }
+        resolve();
+      }, TRANSPORT_CLOSE_BUDGET_MS);
+      void Promise.resolve()
+        .then(() => xmpp.stop())
+        .catch((err: unknown) => {
+          try {
+            log?.warn?.(
+              `[${accountId}] Stale client stop failed: ${err instanceof Error ? err.message : String(err)}`
+            );
+          } catch {
+            /* Contain stop and reporting failures together. */
+          }
+        })
+        .finally(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+    });
+  };
+  clientDisposers.set(xmpp, dispose);
+  owner.disposeClient = dispose;
+
   try {
-    await startXmppClient(xmpp);
+    beginNegotiation();
+    await startXmppClient(xmpp, isActive, abortSignal, startupHandoff.signal, () =>
+      transport.run()
+    );
+    if (!startupHandoff.signal.aborted) {
+      clearTimeout(negotiationTimer);
+      negotiationTimer = undefined;
+    }
   } catch (err) {
-    // Once plugin backoff owns a failed startup, prevent this failed client's
-    // built-in one-second reconnect loop from racing the scheduled replacement.
-    (xmpp as unknown as StartableXmppClient).reconnect?.stop();
+    if (startupHandoff.signal.aborted) {
+      return;
+    }
+    clearTimeout(negotiationTimer);
+    negotiationTimer = undefined;
     log?.error?.(
       `[${accountId}] XMPP connection failed: ${err instanceof Error ? err.message : String(err)}`
     );
-    setStatus?.({ accountId, lastError: err instanceof Error ? err.message : String(err) });
-    scheduleReconnect(accountId, ctx, log);
-  }
-
-  // Return a promise that stays pending until the connection is stopped
-  return new Promise<void>((resolve) => {
-    let cleanedUp = false;
-
-    const cleanup = () => {
-      if (cleanedUp) {
-        return;
-      }
-      cleanedUp = true;
-      abortSignal?.removeEventListener('abort', cleanup);
-      cancelOnline();
-      smClient.off('element', onStreamElement);
-      smClient.off('disconnect', onDisconnect);
-      abortSignal?.removeEventListener('abort', cancelOnline);
-
-      const isCurrent = activeClients.get(accountId) === xmpp;
-      if (isCurrent) {
-        abortReconnect(accountId);
-        clearReconnectState(accountId);
-        log?.info?.(`[${accountId}] Stopping XMPP connection...`);
-        stopKeepalive(accountId);
-        clearMucOccupantIdentities(accountId);
-      }
-
-      void xmpp.stop().catch((err) => {
-        log?.warn?.(
-          `[${accountId}] XMPP stop failed during cleanup: ${err instanceof Error ? err.message : String(err)}`
-        );
+    if (isActive()) {
+      setStatus?.({
+        accountId,
+        connected: false,
+        lastError: err instanceof Error ? err.message : String(err),
       });
-      if (isCurrent) {
-        activeClients.delete(accountId);
-        setStatus?.({
-          accountId,
-          running: false,
-          connected: false,
-          lastStopAt: Date.now(),
-        });
-      }
-
-      resolve();
-    };
-
-    if (abortSignal?.aborted) {
-      cleanup();
-    } else {
-      abortSignal?.addEventListener('abort', cleanup);
+      scheduleReconnect(accountId, ctx, log, sameClientReconnect);
     }
-  });
+  }
 }
 
-// Register this function for reconnect module (avoids circular dependency)
-registerStartXmppConnection(startXmppConnection);
+registerStartXmppConnection((ctx) => {
+  const accountId = ctx.accountId ?? ctx.account.accountId ?? 'default';
+  const owner = accountLifecycles.get(accountId);
+  return owner?.ctx === ctx ? owner.start() : Promise.resolve();
+});
 
 // =============================================================================
 // MESSAGE STANZA HANDLER
@@ -561,8 +880,14 @@ export function setupMessageHandler(
   config: XmppConfig,
   log?: Logger,
   setStatus?: GatewayStartContext['setStatus']
-): void {
-  xmpp.on('stanza', (stanza): void => {
+): () => void {
+  let disposed = false;
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const mappings = new Map<string, string>();
+  const onStanza = (stanza: Element): void => {
+    if (disposed) {
+      return;
+    }
     void (async () => {
       try {
         log?.debug?.(`[${accountId}] XMPP stanza received: attrs=${JSON.stringify(stanza.attrs)}`);
@@ -622,6 +947,7 @@ export function setupMessageHandler(
             // This helps us understand what users are reacting to
             const mapKey = `${accountId}:sent:${serverMsgId}`;
             sentMessageIds.set(mapKey, clientMsgId);
+            mappings.set(mapKey, clientMsgId);
             log?.debug?.(
               `[${accountId}] Stored sent message mapping: server=${serverMsgId} -> client=${clientMsgId}`
             );
@@ -629,18 +955,23 @@ export function setupMessageHandler(
             // Also store the reverse mapping: client ID -> server ID
             const reverseKey = `${accountId}:${clientMsgId}`;
             sentMessageIds.set(reverseKey, serverMsgId);
+            mappings.set(reverseKey, serverMsgId);
             log?.debug?.(
               `[${accountId}] Stored reverse mapping: client=${clientMsgId} -> server=${serverMsgId}`
             );
 
             // Schedule cleanup after 5 minutes
-            setTimeout(
+            const timer = setTimeout(
               () => {
+                timers.delete(timer);
                 sentMessageIds.delete(mapKey);
                 sentMessageIds.delete(reverseKey);
+                mappings.delete(mapKey);
+                mappings.delete(reverseKey);
               },
               5 * 60 * 1000
             );
+            timers.add(timer);
           }
 
           // Skip processing our own messages - they're just carbon copies
@@ -826,5 +1157,20 @@ export function setupMessageHandler(
         // Contain terminal reporting failures without retrying or rethrowing.
       }
     });
-  });
+  };
+  xmpp.on('stanza', onStanza);
+  return () => {
+    disposed = true;
+    xmpp.off('stanza', onStanza);
+    for (const timer of timers) {
+      clearTimeout(timer);
+    }
+    timers.clear();
+    for (const [key, value] of mappings) {
+      if (sentMessageIds.get(key) === value) {
+        sentMessageIds.delete(key);
+      }
+    }
+    mappings.clear();
+  };
 }
