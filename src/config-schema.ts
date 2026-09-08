@@ -10,6 +10,15 @@ export const XmppActionSchema = z.object({
   reactions: z.boolean().optional(),
 });
 
+/** No defaults here: partial named-account settings must inherit root values. */
+export const XmppPresenceSchema = z
+  .object({
+    mode: z.enum(['auto', 'available', 'unavailable']).optional(),
+    availableText: z.string().optional(),
+    unavailableText: z.string().optional(),
+  })
+  .strict();
+
 /**
  * OpenClaw heartbeat visibility overrides. Missing values are resolved by
  * OpenClaw from the channel/global defaults.
@@ -101,6 +110,12 @@ export const XmppAccountOverrideSchema = z.object({
     .array(z.string())
     .optional()
     .describe('Bot owner JIDs (always have direct chat access, cannot be removed by guests)'),
+
+  presence: XmppPresenceSchema.optional().describe('Operational presence (default mode: auto)'),
+  presenceAllowFrom: z
+    .array(z.string())
+    .optional()
+    .describe('Additional trusted presence viewers; * explicitly permits public presence access'),
 
   /** DM allowlist — additional JIDs allowed to direct-chat when dmPolicy is 'allowlist' */
   dmAllowlist: z

@@ -82,7 +82,21 @@ async function connect(
     connect: vi.fn().mockResolvedValue(undefined),
     open: vi.fn(async () => startupOnline?.()),
     stop: vi.fn().mockResolvedValue(undefined),
-    send,
+    send: async (stanza: Element) => {
+      if (stanza.getChild('query', 'jabber:iq:roster')) {
+        emitter.emit(
+          'stanza',
+          xml(
+            'iq',
+            { type: 'result', id: stanza.attrs.id },
+            xml('query', { xmlns: 'jabber:iq:roster' })
+          )
+        );
+        return;
+      }
+      if (stanza.attrs.type === 'unavailable') return;
+      return send(stanza);
+    },
   };
   mocks.client.mockReturnValue(xmpp);
   mocks.joinMuc.mockImplementation((_client, room) => {
@@ -118,7 +132,19 @@ async function connect(
   log.info.mockClear();
   log.debug.mockClear();
   setStatus.mockClear();
-  return { online, xmpp, send, emitter, log, setStatus, events, ctx };
+  return {
+    online: (address: { toString(): string }) => {
+      xmpp.status = 'online';
+      online!(address);
+    },
+    xmpp,
+    send,
+    emitter,
+    log,
+    setStatus,
+    events,
+    ctx,
+  };
 }
 
 // Replacements use the real plugin scheduler and emit online during startup,
@@ -145,13 +171,28 @@ function retryClient() {
           xml('sm', { xmlns: 'urn:xmpp:sm:3' })
         )
       );
+      xmpp.status = 'online';
       emitter.emit('online', { toString: () => 'bot@example.com/resource' });
     }),
     stop: vi.fn(async () => {
       emitter.emit('disconnect');
       emitter.emit('offline');
     }),
-    send,
+    send: async (stanza: Element) => {
+      if (stanza.getChild('query', 'jabber:iq:roster')) {
+        emitter.emit(
+          'stanza',
+          xml(
+            'iq',
+            { type: 'result', id: stanza.attrs.id },
+            xml('query', { xmlns: 'jabber:iq:roster' })
+          )
+        );
+        return;
+      }
+      if (stanza.attrs.type === 'unavailable') return;
+      return send(stanza);
+    },
   };
   return { xmpp, sm, send, emitter };
 }
@@ -244,14 +285,22 @@ describe('online listener lifecycle', () => {
     expect(h.send.mock.calls[0][0].getChild('enable', 'urn:xmpp:carbons:2')).toBeDefined();
     carbons.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence']);
+    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'connected', rooms[0], 'presence']);
     presence.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence', 'connected', rooms[0]]);
+    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'connected', rooms[0], 'presence']);
     expect(mocks.joinMuc).toHaveBeenCalledTimes(1);
     firstJoin.resolve();
     await vi.advanceTimersByTimeAsync(0);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence', 'connected', ...rooms]);
+    expect(h.events).toEqual([
+      'online',
+      'keepalive',
+      'carbons',
+      'connected',
+      rooms[0],
+      'presence',
+      rooms[1],
+    ]);
     expect(mocks.joinMuc).toHaveBeenNthCalledWith(
       2,
       h.xmpp,
@@ -295,12 +344,12 @@ describe('online listener lifecycle', () => {
         'online',
         'keepalive',
         'carbons',
-        'presence',
         'connected',
         ...rooms,
+        'presence',
       ]);
       expect(h.emitter.listenerCount('nonza')).toBe(0);
-      expect(vi.getTimerCount()).toBe(1); // Only keepalive remains.
+      expect(vi.getTimerCount()).toBe(2); // Keepalive and the single presence watcher.
     }
   );
 
@@ -326,7 +375,7 @@ describe('online listener lifecycle', () => {
     expect(h.send).not.toHaveBeenCalled();
     sm.enableSent = false;
     await vi.advanceTimersByTimeAsync(10);
-    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'presence', 'connected', ...rooms]);
+    expect(h.events).toEqual(['online', 'keepalive', 'carbons', 'connected', ...rooms, 'presence']);
     expect(h.log.error).not.toHaveBeenCalled();
   });
 
@@ -424,7 +473,7 @@ describe('online listener lifecycle', () => {
       expect(h.send).toHaveBeenCalledTimes(2);
       expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
       expect(h.setStatus).toHaveBeenCalledTimes(2); // Recovery reset, then connected.
-      expect(vi.getTimerCount()).toBe(1);
+      expect(vi.getTimerCount()).toBe(2); // Keepalive and presence watcher.
     }
   );
 
@@ -540,7 +589,9 @@ describe('online listener lifecycle', () => {
       pending.resolve();
       await vi.advanceTimersByTimeAsync(0);
       expect(h.send).toHaveBeenCalledTimes(phase === 'carbons' ? 1 : 2);
-      expect(mocks.joinMuc).toHaveBeenCalledTimes(phase === 'join' ? 1 : 0);
+      expect(mocks.joinMuc).toHaveBeenCalledTimes(
+        phase === 'carbons' ? 0 : phase === 'join' ? 1 : 2
+      );
     }
   );
 
@@ -563,9 +614,8 @@ describe('online listener lifecycle', () => {
         );
         expect(h.log.error).not.toHaveBeenCalled();
       } else {
-        expect(h.log.error).toHaveBeenCalledTimes(1);
-        expect(h.log.error).toHaveBeenCalledWith(
-          `[${accountId}] XMPP failed to send initial presence: presence failed`
+        expect(h.log.warn).toHaveBeenCalledWith(
+          `[${accountId}] Operational presence publication/authorization unavailable; failing closed`
         );
       }
     }
@@ -588,7 +638,7 @@ describe('online listener lifecycle', () => {
     h.online({ toString: () => 'bot@example.com/resource' });
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.joinMuc).toHaveBeenCalledTimes(3);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2); // Keepalive and presence watcher.
   });
 
   it.each(['none', 'log', 'status', 'both'])(
@@ -710,7 +760,7 @@ describe('SM readiness recovery', () => {
     expectRecoveryReset();
     expect(h.log.error).toHaveBeenCalledTimes(3);
     expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
-    expect(vi.getTimerCount()).toBe(1); // Only the successful connection's keepalive.
+    expect(vi.getTimerCount()).toBe(2); // Successful connection: keepalive and presence watcher.
   });
 
   it.each(['resolved', 'wedged'])(
@@ -852,6 +902,6 @@ describe('SM readiness recovery', () => {
     await vi.advanceTimersByTimeAsync(10);
     expectRecoveryReset();
     expect(h.log.error).toHaveBeenCalledTimes(1);
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2); // Keepalive and presence watcher.
   });
 });

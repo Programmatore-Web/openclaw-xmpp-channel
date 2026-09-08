@@ -9,6 +9,7 @@ import type { client } from '@xmpp/client';
 import { destroyTransport } from './transport.js';
 import {
   activeClients,
+  accountLifecycles,
   clientDisposers,
   reconnectStates,
   RECONNECT_BASE_DELAY_MS,
@@ -158,6 +159,7 @@ export function scheduleReconnect(
         // Contain terminal reporting failures without retrying or rethrowing.
       }
     });
+    accountLifecycles.get(accountId)?.runState?.deactivate();
     log?.error?.(
       `[${accountId}] Max reconnect attempts (${RECONNECT_MAX_ATTEMPTS}) reached, giving up`
     );

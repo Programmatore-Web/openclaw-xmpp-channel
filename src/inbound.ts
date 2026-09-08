@@ -5,6 +5,8 @@ import { randomUUID } from 'crypto';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import { bareJid } from './config-schema.js';
 import { getXmppRuntime } from './runtime.js';
+import type { AccountLifecycle } from './state.js';
+
 import { normalizeAllowFrom, isSenderAllowed } from './normalize.js';
 import type { XmppConfig, XmppInboundMessage, Logger, ChannelAccountStatusPatch } from './types.js';
 import { activeClients, recordInboundMessageId } from './state.js';
@@ -16,6 +18,21 @@ import {
   buildReplyFallbackMarker,
 } from './replies.js';
 
+/** Account-owned SDK run accounting, entered only after sender authorization. */
+async function trackedDispatch(
+  runState: AccountLifecycle['runState'],
+  dispatch: () => Promise<unknown>
+): Promise<void> {
+  if (runState && !runState.isActive()) {
+    return;
+  }
+  runState?.onRunStart();
+  try {
+    await dispatch();
+  } finally {
+    runState?.onRunEnd();
+  }
+}
 type SenderFacts = {
   senderBare: string;
   senderFull: string;
@@ -176,7 +193,8 @@ export async function handleInboundMessage(
   accountId: string,
   config: XmppConfig,
   log?: Logger,
-  setStatus?: (patch: ChannelAccountStatusPatch) => void
+  setStatus?: (patch: ChannelAccountStatusPatch) => void,
+  runState?: AccountLifecycle['runState']
 ): Promise<void> {
   setStatus?.({ accountId, lastInboundAt: Date.now() });
 
@@ -289,30 +307,32 @@ export async function handleInboundMessage(
   await sendChatState(accountId, replyTo, 'composing', log, message.isGroup);
   let delivered = false;
 
-  await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-    ctx,
-    cfg,
-    dispatcherOptions: {
-      responsePrefix: '',
-      deliver: (payload: ReplyPayload) =>
-        new Promise<void>((resolve) => {
-          delivered = true;
-          debouncedDeliver(
-            `${accountId}:${replyTo}`,
-            payload,
-            async (combined) => {
-              await deliverReply(combined, message, accountId, senderIdentity, log, setStatus);
-            },
-            (err) => {
-              const error = err instanceof Error ? err.message : String(err);
-              log?.error?.(`[XMPP] Debounced reply delivery failed: ${error}`);
-              setStatus?.({ accountId, lastError: error });
-            }
-          );
-          resolve();
-        }),
-    },
-  });
+  await trackedDispatch(runState, () =>
+    rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx,
+      cfg,
+      dispatcherOptions: {
+        responsePrefix: '',
+        deliver: (payload: ReplyPayload) =>
+          new Promise<void>((resolve) => {
+            delivered = true;
+            debouncedDeliver(
+              `${accountId}:${replyTo}`,
+              payload,
+              async (combined) => {
+                await deliverReply(combined, message, accountId, senderIdentity, log, setStatus);
+              },
+              (err) => {
+                const error = err instanceof Error ? err.message : String(err);
+                log?.error?.(`[XMPP] Debounced reply delivery failed: ${error}`);
+                setStatus?.({ accountId, lastError: error });
+              }
+            );
+            resolve();
+          }),
+      },
+    })
+  );
 
   if (!delivered) {
     await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
@@ -428,6 +448,7 @@ export async function handleInboundReaction(params: {
   config: XmppConfig;
   log?: Logger;
   setStatus?: (patch: ChannelAccountStatusPatch) => void;
+  runState?: AccountLifecycle['runState'];
 }): Promise<void> {
   const access = await authorizeSender(
     {
@@ -504,12 +525,14 @@ export async function handleInboundReaction(params: {
     },
   });
 
-  await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
-    ctx,
-    cfg: params.cfg,
-    dispatcherOptions: {
-      responsePrefix: '',
-      deliver: () => Promise.resolve(undefined),
-    },
-  });
+  await trackedDispatch(params.runState, () =>
+    rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx,
+      cfg: params.cfg,
+      dispatcherOptions: {
+        responsePrefix: '',
+        deliver: () => Promise.resolve(undefined),
+      },
+    })
+  );
 }

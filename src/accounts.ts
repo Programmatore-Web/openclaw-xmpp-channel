@@ -113,6 +113,12 @@ export function resolveXmppAccount(params: {
     } as XmppConfig;
   }
 
+  // Presence is a narrow nested override: omitted text/mode inherit separately.
+  const presenceOverride = root?.accounts?.[accountId]?.presence;
+  if (root?.presence || presenceOverride) {
+    config.presence = { ...root?.presence, ...presenceOverride };
+  }
+
   return {
     accountId,
     config,

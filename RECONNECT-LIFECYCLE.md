@@ -30,9 +30,13 @@ never resets the count. Exhaustion aborts recovery and disposes the active clien
 A settled failure of an established session reuses its entity, resource, SM ID,
 counters and outbound queue. Failed transport attempts use `disconnect()`, not
 `stop()`/`offline`. Successful native SM `resumed` resets recovery, marks connected
-and restores keepalive without repeating Carbons, presence or MUC initialization.
+and restores keepalive without repeating Carbons, initial presence or MUC initialization.
+D5 retains the published operational state and sends only a changed-state correction
+after native resumed readiness; it does not repeat roster reconciliation.
 A failed resume followed by fresh `online` waits for native SM readiness, then resets
-recovery and initializes Carbons, presence, connected status and configured MUCs.
+recovery and initializes Carbons, connected status and configured MUCs. D5 reconciles
+persistent roster subscriptions before initial global presence, independently of
+messaging/MUC readiness. See [D5 presence design](AGENT-PRESENCE.md).
 At fresh `online`, before waiting for readiness, the monitor cancels the previous
 online generation and clears joined rooms, pending joins and verified occupant
 real-JID observations. An old room/nickname observation cannot authorize traffic

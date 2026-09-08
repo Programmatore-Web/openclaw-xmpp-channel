@@ -5,6 +5,7 @@ import { handleInboundMessage } from '../src/inbound.js';
 import { trackMucOccupantIdentity } from '../src/muc-identity.js';
 import { setXmppRuntime } from '../src/runtime.js';
 import { cleanupAccountState } from '../src/state.js';
+import { createRunStateMachine } from 'openclaw/plugin-sdk/channel-lifecycle';
 import type { XmppConfig, XmppInboundMessage } from '../src/types.js';
 
 const accountId = 'security-test';
@@ -93,18 +94,88 @@ function expectBlocked(harness: ReturnType<typeof createRuntimeHarness>): void {
 beforeEach(() => cleanupAccountState(accountId));
 afterEach(() => cleanupAccountState(accountId));
 
+describe('D5 authorized run accounting through the public SDK', () => {
+  it.each([false, true])(
+    'reports busy during an authorized dispatch and resets after error=%s',
+    async (fails) => {
+      const harness = createRuntimeHarness();
+      setXmppRuntime(harness.runtime);
+      const snapshots: Record<string, unknown>[] = [];
+      const tracker = createRunStateMachine({ setStatus: (patch) => snapshots.push(patch) });
+      harness.dispatchReplyWithBufferedBlockDispatcher.mockImplementation(async () => {
+        expect(snapshots.at(-1)).toMatchObject({ busy: true, activeRuns: 1 });
+        if (fails) throw new Error('test dispatch failure');
+        return { queuedFinal: false };
+      });
+      try {
+        const task = handleInboundMessage(
+          directMessage(),
+          cfg,
+          accountId,
+          accountConfig({ dmPolicy: 'open' }),
+          undefined,
+          undefined,
+          tracker
+        );
+        if (fails) await expect(task).rejects.toThrow('test dispatch failure');
+        else await task;
+        expect(snapshots.at(-1)).toMatchObject({ busy: false, activeRuns: 0 });
+      } finally {
+        tracker.deactivate();
+      }
+    }
+  );
+  it('blocked senders never start a run; a deactivated lifecycle cannot dispatch', async () => {
+    const harness = createRuntimeHarness();
+    setXmppRuntime(harness.runtime);
+    const status = vi.fn();
+    const tracker = createRunStateMachine({ setStatus: status });
+    await handleInboundMessage(
+      directMessage(),
+      cfg,
+      accountId,
+      accountConfig({ dmPolicy: 'disabled' }),
+      undefined,
+      undefined,
+      tracker
+    );
+    expect(status).toHaveBeenCalledExactlyOnceWith({ busy: false, activeRuns: 0 });
+    tracker.deactivate();
+    await handleInboundMessage(
+      directMessage(),
+      cfg,
+      accountId,
+      accountConfig({ dmPolicy: 'open' }),
+      undefined,
+      undefined,
+      tracker
+    );
+    expect(harness.dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+  });
+});
+
 describe('direct-message authorization', () => {
   it('blocks non-owners when DMs are disabled', async () => {
     const harness = createRuntimeHarness();
     setXmppRuntime(harness.runtime);
-    await handleInboundMessage(directMessage(), cfg, accountId, accountConfig({ dmPolicy: 'disabled' }));
+    await handleInboundMessage(
+      directMessage(),
+      cfg,
+      accountId,
+      accountConfig({ dmPolicy: 'disabled' })
+    );
     expectBlocked(harness);
   });
 
   it('admits a sender only when DM open is explicit', async () => {
     const harness = createRuntimeHarness();
     setXmppRuntime(harness.runtime);
-    await handleInboundMessage(directMessage(), cfg, accountId, accountConfig({ dmPolicy: 'open' }));
+    await handleInboundMessage(
+      directMessage(),
+      cfg,
+      accountId,
+      accountConfig({ dmPolicy: 'open' })
+    );
     expect(harness.resolveAgentRoute).toHaveBeenCalledOnce();
     expect(harness.recordInboundSession).toHaveBeenCalledOnce();
     expect(harness.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledOnce();
@@ -126,7 +197,12 @@ describe('direct-message authorization', () => {
   it('blocks an unapproved pairing peer before route, session, or dispatch', async () => {
     const harness = createRuntimeHarness();
     setXmppRuntime(harness.runtime);
-    await handleInboundMessage(directMessage(), cfg, accountId, accountConfig({ dmPolicy: 'pairing' }));
+    await handleInboundMessage(
+      directMessage(),
+      cfg,
+      accountId,
+      accountConfig({ dmPolicy: 'pairing' })
+    );
     expect(harness.readAllowFromStore).toHaveBeenCalledWith({ channel: 'xmpp', accountId });
     expectBlocked(harness);
   });
@@ -134,7 +210,12 @@ describe('direct-message authorization', () => {
   it('admits an account-scoped paired peer but does not authorize commands', async () => {
     const harness = createRuntimeHarness(['user@example.com']);
     setXmppRuntime(harness.runtime);
-    await handleInboundMessage(directMessage(), cfg, accountId, accountConfig({ dmPolicy: 'pairing' }));
+    await handleInboundMessage(
+      directMessage(),
+      cfg,
+      accountId,
+      accountConfig({ dmPolicy: 'pairing' })
+    );
     expect(harness.readAllowFromStore).toHaveBeenCalledWith({ channel: 'xmpp', accountId });
     expect(harness.resolveAgentRoute).toHaveBeenCalledOnce();
     expect(harness.finalizeInboundContext).toHaveBeenCalledWith(

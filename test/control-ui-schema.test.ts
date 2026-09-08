@@ -43,6 +43,8 @@ const accountFieldNames = [
   'nickname',
   'dmPolicy',
   'allowFrom',
+  'presence',
+  'presenceAllowFrom',
   'dmAllowlist',
   'groupPolicy',
   'groupAllowFrom',
