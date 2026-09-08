@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayStartContext } from '../src/types.js';
 
 const mocks = vi.hoisted(() => ({ client: vi.fn(), joinMuc: vi.fn() }));
-vi.mock('@xmpp/client', async (importOriginal) => ({
+vi.mock('../src/xmpp.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@xmpp/client')>()),
   client: mocks.client,
 }));

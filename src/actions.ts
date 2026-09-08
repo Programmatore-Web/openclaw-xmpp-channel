@@ -1,7 +1,7 @@
 /** XEP-0444 reaction action for the OpenClaw message tool. */
 
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import type { ChannelMessageActionName } from './types.js';
 import { resolveXmppAccount } from './accounts.js';
 import { getActiveClient } from './monitor.js';

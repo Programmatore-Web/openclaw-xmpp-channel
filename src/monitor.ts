@@ -5,7 +5,8 @@
  * Handles connection lifecycle, message routing, and event dispatch.
  */
 
-import { client, xml } from '@xmpp/client';
+import { client, xml } from './xmpp.js';
+import { assertXmppRuntimeCompatible } from './xmpp-runtime-compat.js';
 import type { Element } from '@xmpp/client';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import { createRunStateMachine } from 'openclaw/plugin-sdk/channel-lifecycle';
@@ -304,6 +305,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
 
 /** Create one client; replacement never waits on or retains another account lifetime. */
 async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): Promise<void> {
+  assertXmppRuntimeCompatible();
   const { account, cfg, abortSignal, log } = ctx;
   const accountId = ctx.accountId ?? account.accountId ?? 'default';
   const config = account.config;

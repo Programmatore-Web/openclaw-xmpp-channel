@@ -4,7 +4,7 @@
  * Sends periodic ping IQ stanzas to keep the connection alive
  */
 
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import type { client } from '@xmpp/client';
 import type { Logger } from './types.js';
 import { keepaliveIntervals, KEEPALIVE_INTERVAL_MS } from './state.js';

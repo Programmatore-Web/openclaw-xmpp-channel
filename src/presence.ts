@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { xml, type Element, type XmppClient } from '@xmpp/client';
+import { xml } from './xmpp.js';
+import type { Element, XmppClient } from '@xmpp/client';
 import type { ChannelAccountSnapshot } from 'openclaw/plugin-sdk/channel-contract';
 import type { GatewayStartContext, XmppConfig, XmppPresenceConfig } from './types.js';
 import { bareJid } from './config-schema.js';

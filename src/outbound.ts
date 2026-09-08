@@ -1,4 +1,4 @@
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import { randomUUID } from 'node:crypto';
 import type { XmppConfig, SendResult, Logger } from './types.js';
 import { getActiveClient } from './monitor.js';

@@ -4,7 +4,7 @@
  * Handles presence stanzas and MUC self-presence/errors.
  */
 
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import type { Element } from '@xmpp/client';
 import type { client } from '@xmpp/client';
 import { bareJid } from './config-schema.js';

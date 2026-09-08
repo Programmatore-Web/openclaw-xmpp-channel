@@ -33,6 +33,12 @@ Supported runtimes: OpenClaw 2026.8.2 or newer within the 2026 release line,
 and the Node.js ranges supported by OpenClaw 2026.8.2: 22.22.3–22.x,
 24.15.0–24.x, or 25.9.0 and newer.
 
+The validated xmpp.js runtime family is **exactly 0.14.0**. The plugin pins
+`@xmpp/client` and locally verifies the actual upstream component copies before
+loading their runtime or using private internals. Future semver-compatible versions
+require revalidation; mismatched or unverifiable installations fail startup with
+an actionable compatibility error. See [runtime policy and upgrade procedure](XMPP-RUNTIME-COMPATIBILITY.md).
+
 ## Configuration
 
 ```json
