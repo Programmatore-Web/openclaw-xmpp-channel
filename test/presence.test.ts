@@ -7,6 +7,7 @@ import {
   createPresenceController,
   derivePresence,
   buildOperationalPresence,
+  authorizePresence,
 } from '../src/presence.js';
 import { setXmppRuntime } from '../src/runtime.js';
 import type { XmppConfig, GatewayStartContext } from '../src/types.js';
@@ -556,6 +557,286 @@ describe('trusted subscriptions and probes', () => {
     await h.controller.handle('probe', alice);
     expect(h.presence()).toHaveLength(1);
   });
+});
+
+describe('P2 canonical presence trust', () => {
+  const sources = ['presenceAllowFrom', 'allowFrom', 'pairing'] as const;
+  const unicode = 'alice@bücher.example';
+  const ascii = 'alice@xn--bcher-kva.example';
+  const cases = sources.flatMap((source) => [
+    { source, configured: unicode, incoming: ascii },
+    { source, configured: ascii, incoming: unicode },
+  ]);
+  function trusted(source: (typeof sources)[number], entries: string[]) {
+    if (source === 'pairing') {
+      pairing.mockResolvedValue(entries);
+      return fixture();
+    }
+    return fixture({ [source]: entries });
+  }
+
+  it.each(cases)(
+    'authorizes $source $configured from $incoming and denies a different identity',
+    async ({ source, configured, incoming }) => {
+      const h = trusted(source, [configured]);
+      await h.controller.ready(true);
+      h.send.mockClear();
+      await h.controller.handle('subscribe', `${incoming}/desktop`);
+      await h.controller.handle('probe', `${incoming}/phone`);
+      expect(h.presence().map((s) => s.attrs)).toEqual([
+        { to: ascii, type: 'subscribed' },
+        { to: ascii },
+        { to: ascii },
+      ]);
+      h.send.mockClear();
+      await h.controller.handle('subscribe', 'other@xn--bcher-kva.example/desktop');
+      await h.controller.handle('probe', 'alice@example.com/desktop');
+      expect(h.presence()).toHaveLength(0);
+    }
+  );
+
+  it.each(
+    cases.flatMap((testCase) =>
+      ['from', 'both'].map((subscription) => ({ ...testCase, subscription }))
+    )
+  )(
+    'preserves $subscription roster $incoming trusted through $source $configured',
+    async ({ source, configured, incoming, subscription }) => {
+      const h = trusted(source, [configured]);
+      h.roster([xml('item', { jid: incoming, subscription })]);
+      await h.controller.ready(true);
+      expect(h.presence().filter((s) => s.attrs.type === 'unsubscribed')).toEqual([]);
+      expect(h.broadcasts()).toHaveLength(1);
+      expect(h.send.mock.calls.filter(([s]) => s.attrs.type === 'get')).toHaveLength(1);
+    }
+  );
+
+  it.each(sources)('uses the same NFC/case/resource/root-dot boundary for %s', async (source) => {
+    for (const [configured, incoming, canonical] of [
+      [
+        'Cafe\u0301@BÜCHER.EXAMPLE./configured',
+        'CAFÉ@xn--bcher-kva.example/incoming',
+        'café@xn--bcher-kva.example',
+      ],
+      [
+        'CAFÉ@xn--bcher-kva.example',
+        'Cafe\u0301@bücher.example./incoming',
+        'café@xn--bcher-kva.example',
+      ],
+      ['ALICE@EXAMPLE.COM./configured', 'alice@example.com/incoming', 'alice@example.com'],
+      [
+        String.raw`Alice\20Smith@BÜCHER.EXAMPLE/configured`,
+        String.raw`alice\20smith@xn--bcher-kva.example/incoming`,
+        String.raw`alice\20smith@xn--bcher-kva.example`,
+      ],
+    ]) {
+      const h = trusted(source, [configured]);
+      await h.controller.ready(true);
+      h.send.mockClear();
+      await h.controller.handle('probe', incoming);
+      expect(h.presence().map((s) => s.attrs.to)).toEqual([canonical]);
+      h.controller.dispose();
+    }
+  });
+
+  it.each(sources)('treats only presenceAllowFrom wildcard as public: %s', async (source) => {
+    const h = trusted(source, ['*']);
+    h.roster([xml('item', { jid: ascii, subscription: 'from' })]);
+    await h.controller.ready(true);
+    expect(h.presence().filter((s) => s.attrs.type === 'unsubscribed')).toHaveLength(
+      source === 'presenceAllowFrom' ? 0 : 1
+    );
+    h.send.mockClear();
+    await h.controller.handle('subscribe', `${unicode}/desktop`);
+    await h.controller.handle('probe', `${unicode}/phone`);
+    expect(h.presence()).toHaveLength(source === 'presenceAllowFrom' ? 3 : 0);
+  });
+
+  const malformed: unknown[] = [
+    '',
+    undefined,
+    null,
+    123,
+    { toString: () => ascii },
+    '* ',
+    ' *',
+    '*/desktop',
+    '＊',
+    'alice@*.example',
+    '@example.com',
+    'alice@',
+    'alice@@example.com',
+    'alice@example.com..',
+    'alice@bad_domain.example',
+    'alice@foo%2Eexample',
+    'alice@bücher.example:5222',
+    ' alice@example.com',
+    'alice@example.com ',
+    'bad\nname@example.com',
+    String.raw`bad\xxname@example.com`,
+  ];
+  it.each(sources)(
+    'ignores malformed %s entries without coercion or accidental public trust',
+    async (source) => {
+      const h = trusted(source, malformed as string[]);
+      await expect(authorizePresence(h.config, accountId, ascii)).resolves.toBe(false);
+      await expect(authorizePresence(h.config, accountId, 'alice@example.com')).resolves.toBe(
+        false
+      );
+      h.roster([xml('item', { jid: ascii, subscription: 'both' })]);
+      await h.controller.ready(true);
+      expect(
+        h
+          .presence()
+          .filter((s) => s.attrs.type === 'unsubscribed')
+          .map((s) => s.attrs.to)
+      ).toEqual([ascii]);
+      expect(h.broadcasts()).toHaveLength(1); // Malformed trust entries do not crash reconciliation.
+      h.controller.dispose();
+      const valid = trusted(source, [...malformed, unicode] as string[]);
+      await expect(authorizePresence(valid.config, accountId, ascii)).resolves.toBe(true);
+    }
+  );
+
+  it('denies malformed incoming identities even with explicit public presence', async () => {
+    const h = fixture({ presenceAllowFrom: ['*'] });
+    await h.controller.ready(true);
+    h.send.mockClear();
+    for (const incoming of [...malformed, '*']) {
+      await expect(authorizePresence(h.config, accountId, incoming as string)).resolves.toBe(false);
+      for (const type of ['subscribe', 'probe', 'unsubscribe']) {
+        await expect(h.controller.handle(type, incoming as string)).resolves.toBeUndefined();
+      }
+    }
+    expect(h.presence()).toHaveLength(0);
+  });
+
+  it.each([
+    '',
+    undefined,
+    123,
+    '*',
+    '*/desktop',
+    'alice@@example.com',
+    'alice@bad_domain.example',
+    'alice@bücher.example/desktop',
+  ])(
+    'fails closed on malformed/non-bare roster identity %j even with public trust',
+    async (jid) => {
+      const h = fixture({ presenceAllowFrom: ['*'] });
+      h.roster([xml('item', { jid, subscription: 'both' })]);
+      await expect(h.controller.ready(true)).resolves.toBeUndefined();
+      expect(h.presence()).toHaveLength(0);
+      expect(h.ctx.log?.warn).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      await h.controller.handle('probe', `${unicode}/desktop`);
+      expect(h.presence().map((s) => s.attrs.to)).toEqual([ascii]);
+      expect(h.broadcasts()).toHaveLength(0);
+    }
+  );
+
+  it('coalesces equivalent subscribe identities into one approval token', async () => {
+    const h = trusted('presenceAllowFrom', [unicode]);
+    await h.controller.ready(true);
+    h.send.mockClear();
+    await Promise.all([
+      h.controller.handle('subscribe', `${unicode}/desktop`),
+      h.controller.handle('subscribe', `${ascii}/phone`),
+    ]);
+    expect(h.presence().map((s) => s.attrs)).toEqual([
+      { to: ascii, type: 'subscribed' },
+      { to: ascii },
+    ]);
+  });
+
+  it('keeps IDN pairing-store failure closed for reconciliation and incoming requests', async () => {
+    const h = fixture();
+    h.roster([xml('item', { jid: unicode, subscription: 'both' })]);
+    pairing.mockRejectedValue(new Error('Pairing unavailable'));
+    await h.controller.ready(true);
+    await h.controller.handle('subscribe', `${ascii}/desktop`);
+    await h.controller.handle('probe', `${unicode}/desktop`);
+    expect(h.presence()).toHaveLength(0); // No blind revocation on a failed trust lookup either.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['presenceAllowFrom', 'allowFrom'] as const)(
+    'explicit canonical %s trust does not depend on pairing availability',
+    async (source) => {
+      const h = trusted(source, [unicode]);
+      pairing.mockRejectedValue(new Error('Pairing unavailable'));
+      h.roster([xml('item', { jid: ascii, subscription: 'both' })]);
+      await h.controller.ready(true);
+      await h.controller.handle('subscribe', `${ascii}/desktop`);
+      expect(h.presence().map((s) => s.attrs.type)).toEqual([undefined, 'subscribed', undefined]);
+      expect(pairing).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ['agent@bücher.example/resource', 'AGENT@XN--BCHER-KVA.EXAMPLE.'],
+    ['agent@xn--bcher-kva.example/resource', 'agent@bücher.example'],
+  ])('accepts the canonical bare roster origin for account %s and server %s', async (jid, from) => {
+    const h = fixture({ jid });
+    const original = h.send.getMockImplementation()!;
+    h.send.mockImplementation(async (stanza) => {
+      if (stanza.getChild('query', 'jabber:iq:roster') && stanza.attrs.type === 'get') {
+        h.emitter.emit(
+          'stanza',
+          xml(
+            'iq',
+            { type: 'result', id: stanza.attrs.id, from },
+            xml('query', { xmlns: 'jabber:iq:roster' })
+          )
+        );
+      } else await original(stanza);
+    });
+    const ready = h.controller.ready(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    await ready;
+    expect(h.broadcasts()).toHaveLength(1);
+    expect(h.ctx.log?.warn).not.toHaveBeenCalled();
+    h.send.mockClear();
+    h.emitter.emit(
+      'stanza',
+      xml('iq', { type: 'set', id: 'idn-push', from }, xml('query', { xmlns: 'jabber:iq:roster' }))
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.send.mock.calls.map(([s]) => s.attrs)).toEqual([
+      { type: 'result', id: 'idn-push', to: from },
+    ]);
+  });
+
+  it.each(['agent@xn--bcher-kva.example/other', 'other@bücher.example', 'agent@@bücher.example'])(
+    'rejects non-bare/different/malformed roster origin %s',
+    async (from) => {
+      const h = fixture({ jid: 'agent@bücher.example', presenceAllowFrom: ['*'] });
+      h.roster([], 'hang');
+      const ready = h.controller.ready(true);
+      h.emitter.emit(
+        'stanza',
+        xml(
+          'iq',
+          { type: 'result', id: h.send.mock.calls[0][0].attrs.id, from },
+          xml('query', { xmlns: 'jabber:iq:roster' })
+        )
+      );
+      await vi.advanceTimersByTimeAsync(5000);
+      await ready;
+      expect(h.broadcasts()).toHaveLength(0);
+      h.send.mockClear();
+      h.emitter.emit(
+        'stanza',
+        xml(
+          'iq',
+          { type: 'set', id: 'invalid-origin-push', from },
+          xml('query', { xmlns: 'jabber:iq:roster' })
+        )
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.send).not.toHaveBeenCalled();
+    }
+  );
 });
 
 describe('P2 audit of one-shot bounded D5 writes', () => {

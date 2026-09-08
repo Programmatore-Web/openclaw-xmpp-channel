@@ -158,9 +158,28 @@ budget expires, then zero D5 timers/listeners after disposal.
 Presence trust is a separate capability: explicit owner JIDs, explicit
 `presenceAllowFrom`, or identities returned by
 `runtime.channel.pairing.readAllowFromStore({ channel: "xmpp", accountId })`.
-Full sender JIDs are normalized to bare JIDs. DM policy, `dmAllowlist`, group
-policy and `groupAllowFrom` never grant this capability. Only an explicit `*`
-in `presenceAllowFrom` permits public access; owner/pairing wildcards do not.
+Presence comparisons use one local `canonicalizePresenceJid` helper for incoming
+subscribe/probe senders, owner `allowFrom`, `presenceAllowFrom`, pairing-store
+identities and roster subscribers. It strips the resource and reuses the existing
+`normalizeXmppRoomJid` bare-key path: lowercase localpart plus NFC, NFC domain with
+Unicode-to-ASCII/IDN conversion, lowercase ASCII domain and the existing single
+trailing-dot equivalence. For example, `alice@bücher.example` and
+`alice@xn--bcher-kva.example/desktop` compare equal in either direction for every
+trust source; a matching `from`/`both` roster subscriber is not revoked.
+
+This is the repository's existing key normalization, not full RFC 7622/PRECIS
+validation. Its localpart/escape, domain and IP-literal checks remain unchanged;
+resources are stripped, not validated, and input is not trimmed or URI-decoded.
+Malformed bare identities and non-string entries fail closed without coercion.
+Roster item JIDs and explicit server origins must still be bare; malformed roster
+items close the global publication gate. Server-origin comparisons use the same
+canonical form for our account, while revocation stanzas retain the server's bare
+roster address. No DM/MUC helper or global allowlist semantics are changed.
+
+DM policy, `dmAllowlist`, group policy and `groupAllowFrom` never grant this
+capability. Only the literal entry `"*"` in `presenceAllowFrom` permits public
+access to valid identities; owner/pairing wildcards do not. `*` is not processed
+as a JID, and lookalikes such as `*/desktop` do not enable public access.
 Store failure denies unproven requests and prevents global reconciliation from
 being declared safe. Explicit configured trust does not depend on store access.
 

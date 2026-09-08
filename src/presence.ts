@@ -3,7 +3,7 @@ import { xml, type Element, type XmppClient } from '@xmpp/client';
 import type { ChannelAccountSnapshot } from 'openclaw/plugin-sdk/channel-contract';
 import type { GatewayStartContext, XmppConfig, XmppPresenceConfig } from './types.js';
 import { bareJid } from './config-schema.js';
-import { isSenderAllowed, normalizeAllowFrom, normalizeXmppRoomJid } from './normalize.js';
+import { normalizeXmppRoomJid } from './normalize.js';
 import { getXmppRuntime } from './runtime.js';
 
 export const PRESENCE_POLL_MS = 1000;
@@ -68,21 +68,34 @@ export function buildOperationalPresence(value: OperationalPresence, to?: string
   );
 }
 
+/** Presence-only bare identity: reuse the repository's NFC/IDN key rules,
+ * without changing global allowlists or claiming full RFC 7622/PRECIS validation. */
+function canonicalizePresenceJid(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const jid = bareJid(raw);
+  return jid === '*' ? undefined : normalizeXmppRoomJid(jid);
+}
+
 /** Presence trust is independent of all DM/group policies. No pairing challenge. */
 export async function authorizePresence(
   config: XmppConfig,
   accountId: string,
   sender: string
 ): Promise<boolean> {
-  const jid = normalizeXmppRoomJid(bareJid(sender));
+  const jid = canonicalizePresenceJid(sender);
   if (!jid) {
     return false;
   }
   // A wildcard owner list is not an explicit human identity. Public presence
   // must be selected through presenceAllowFrom itself.
+  const matches = (entries?: readonly unknown[]) =>
+    entries?.some((entry) => canonicalizePresenceJid(entry) === jid) ?? false;
   if (
-    normalizeAllowFrom(config.allowFrom).entries.includes(jid) ||
-    isSenderAllowed(normalizeAllowFrom(config.presenceAllowFrom), jid)
+    matches(config.allowFrom) ||
+    config.presenceAllowFrom?.includes('*') ||
+    matches(config.presenceAllowFrom)
   ) {
     return true;
   }
@@ -91,7 +104,7 @@ export async function authorizePresence(
     channel: 'xmpp',
     accountId,
   });
-  return normalizeAllowFrom(approved.map(String)).entries.includes(jid);
+  return matches(approved);
 }
 
 /** A single client-owned controller; retained publication survives only SM resume. */
@@ -177,9 +190,18 @@ export function createPresenceController(params: {
     });
   }
 
-  const serverOrigin = (stanza: Element) =>
-    !stanza.attrs.from ||
-    stanza.attrs.from.toLowerCase() === bareJid(ctx.account.config.jid).toLowerCase();
+  const serverOrigin = (stanza: Element) => {
+    const from = stanza.attrs.from;
+    if (!from) {
+      return true;
+    }
+    const origin = canonicalizePresenceJid(from);
+    return (
+      origin !== undefined &&
+      from === bareJid(from) &&
+      origin === canonicalizePresenceJid(ctx.account.config.jid)
+    );
+  };
 
   // A cancellable roster IQ avoids iqCaller 0.14's uncancellable handler/timer
   // and validates response origin as well as the unpredictable request id.
@@ -217,7 +239,8 @@ export function createPresenceController(params: {
       if (
         items.some(
           (item) =>
-            !normalizeXmppRoomJid(item.attrs.jid ?? '') ||
+            !canonicalizePresenceJid(item.attrs.jid) ||
+            bareJid(item.attrs.jid) !== item.attrs.jid ||
             !['none', 'to', 'from', 'both'].includes(item.attrs.subscription ?? 'none')
         )
       ) {
@@ -402,7 +425,7 @@ export function createPresenceController(params: {
       if (!current(signal)) {
         return;
       }
-      const to = normalizeXmppRoomJid(bareJid(from));
+      const to = canonicalizePresenceJid(from);
       if (!to) {
         return;
       }
