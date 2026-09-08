@@ -155,7 +155,12 @@ describe('real XMPP transport failure containment', () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(acceptedConnections).toBe(1);
-      expect(logs.filter((message) => message.includes('XMPP error:'))).toHaveLength(2);
+      // The initial clean socket close fails startup directly. Only the plugin's
+      // scheduled retry emits ECONNREFUSED; no hidden native retry is needed.
+      expect(logs.filter((message) => message.includes('XMPP error:'))).toHaveLength(1);
+      expect(logs).toContain(
+        `[${accountId}] XMPP connection failed: XMPP disconnected before online`
+      );
       expect(logs.filter((message) => message.includes('XMPP connection failed:'))).toHaveLength(2);
       expect(logs.some((message) => message.includes('Scheduling reconnect in 1000ms'))).toBe(true);
       expect(logs.some((message) => message.includes('Scheduling reconnect in 2000ms'))).toBe(true);

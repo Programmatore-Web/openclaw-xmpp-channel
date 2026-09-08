@@ -12,7 +12,6 @@ vi.mock('@xmpp/client', async (importOriginal) => ({
 vi.mock('../src/rooms.js', () => ({ joinMuc: mocks.joinMuc }));
 
 import { startXmppConnection } from '../src/monitor.js';
-import { scheduleReconnect } from '../src/reconnect.js';
 import {
   activeClients,
   cleanupAccountState,
@@ -260,7 +259,8 @@ describe('online listener lifecycle', () => {
       'bot',
       h.log,
       accountId,
-      true
+      true,
+      expect.any(AbortSignal)
     );
     expect(h.setStatus).toHaveBeenCalledWith({
       accountId,
@@ -365,7 +365,8 @@ describe('online listener lifecycle', () => {
       expect(h.setStatus).not.toHaveBeenCalledWith(expect.objectContaining({ connected: true }));
       expect(keepaliveIntervals.has(accountId)).toBe(false);
       expect(h.emitter.listenerCount('nonza')).toBe(0);
-      expect(vi.getTimerCount()).toBe(mode === 'offline' ? 1 : 0);
+      // Both transport loss and offline now leave only the plugin backoff timer.
+      expect(vi.getTimerCount()).toBe(['offline', 'disconnect'].includes(mode) ? 1 : 0);
     }
   );
 
@@ -390,7 +391,7 @@ describe('online listener lifecycle', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(h.send).toHaveBeenCalledTimes(2);
     expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
-    expect(h.setStatus).toHaveBeenCalledTimes(1);
+    expect(h.setStatus).toHaveBeenCalledTimes(2); // Recovery reset, then connected.
   });
 
   it.each([true, false])(
@@ -422,7 +423,7 @@ describe('online listener lifecycle', () => {
       }
       expect(h.send).toHaveBeenCalledTimes(2);
       expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
-      expect(h.setStatus).toHaveBeenCalledTimes(1);
+      expect(h.setStatus).toHaveBeenCalledTimes(2); // Recovery reset, then connected.
       expect(vi.getTimerCount()).toBe(1);
     }
   );
@@ -475,10 +476,9 @@ describe('online listener lifecycle', () => {
     await vi.advanceTimersByTimeAsync(0);
     sm.enabled = false;
     sm.enableSent = false;
+    seedRecovery();
     h.emitter.emit('disconnect');
     expect(keepaliveIntervals.has(accountId)).toBe(false);
-    seedRecovery();
-    scheduleReconnect(accountId, h.ctx);
     expect(reconnectStates.get(accountId)?.timer).toBeDefined();
     sm.enabled = true;
     sm.emit('resumed'); // xmpp.js does not emit online for a resumed stream.
@@ -489,8 +489,13 @@ describe('online listener lifecycle', () => {
     expect(mocks.joinMuc).toHaveBeenCalledTimes(2);
     expect(h.setStatus).toHaveBeenCalledWith({
       accountId,
+      running: true,
       connected: true,
       lastConnectedAt: expect.any(Number),
+      lastError: null,
+      reconnectAttempts: 0,
+      reconnectNextAt: null,
+      reconnectPending: false,
     });
     await vi.advanceTimersByTimeAsync(30_000);
     expect(h.send.mock.calls[2][0].getChild('ping', 'urn:xmpp:ping')).toBeDefined();
@@ -620,6 +625,48 @@ describe('online listener lifecycle', () => {
 });
 
 describe('SM readiness recovery', () => {
+  it.each(['same event turn', 'pending readiness'])(
+    'recovers a disconnect before the first SM gate settles: %s',
+    async (timing) => {
+      const h = await connect({ enabled: false, enableSent: false }, true);
+      h.online({ toString: () => 'bot@example.com/resource' });
+      if (timing === 'pending readiness') await vi.advanceTimersByTimeAsync(50);
+      h.emitter.emit('disconnect');
+      const next = retryClient();
+      mocks.client.mockReturnValue(next.xmpp);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(h.send).not.toHaveBeenCalled();
+      expect(mocks.client).toHaveBeenCalledTimes(2);
+      expect(h.xmpp.stop).toHaveBeenCalledOnce();
+      expect(activeClients.get(accountId)).toBe(next.xmpp);
+      expect(reconnectStates.get(accountId)?.attempts).toBe(1);
+      next.sm.enabled = true;
+      await vi.advanceTimersByTimeAsync(10);
+      expectRecoveryReset();
+      expect(next.send).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it('switches a pending same-client retry to replacement if the entity goes offline', async () => {
+    const h = await connect({ enabled: true, enableSent: true }, true);
+    h.online({ toString: () => 'bot@example.com/resource' });
+    await vi.advanceTimersByTimeAsync(0);
+    h.emitter.emit('disconnect');
+    h.emitter.emit('offline');
+    expect(reconnectStates.get(accountId)?.attempts).toBe(1);
+    const next = retryClient();
+    mocks.client.mockReturnValue(next.xmpp);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.xmpp.stop).toHaveBeenCalledOnce();
+    expect(mocks.client).toHaveBeenCalledTimes(2);
+    expect(activeClients.get(accountId)).toBe(next.xmpp);
+    expect(reconnectStates.get(accountId)?.attempts).toBe(1);
+    expect(next.send).not.toHaveBeenCalled();
+    next.sm.enabled = true;
+    await vi.advanceTimersByTimeAsync(10);
+    expectRecoveryReset();
+  });
+
   it('preserves backoff across successive SM timeouts and resets only after current SM readiness', async () => {
     const h = await connect({ enabled: false, enableSent: false }, true);
     const recovery = reconnectStates.get(accountId)!;
@@ -639,6 +686,7 @@ describe('SM readiness recovery', () => {
         accountId,
         reconnectAttempts: attempt,
         reconnectNextAt: Date.now() + delay,
+        reconnectPending: true,
       });
       expect(current.reconnect.stop).toHaveBeenCalledTimes(1);
       expect(current.stop).not.toHaveBeenCalled();

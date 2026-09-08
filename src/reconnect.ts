@@ -5,8 +5,11 @@
  */
 
 import type { GatewayStartContext, Logger } from './types.js';
+import type { client } from '@xmpp/client';
+import { destroyTransport } from './transport.js';
 import {
   activeClients,
+  clientDisposers,
   reconnectStates,
   RECONNECT_BASE_DELAY_MS,
   RECONNECT_MAX_DELAY_MS,
@@ -74,13 +77,19 @@ const STALE_STOP_TIMEOUT_MS = 5000;
  * without stopping it therefore leaks a socket per attempt against the server.
  * The stop is bounded so a wedged teardown can't stall the reconnect.
  */
-async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
+export async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
   const stale = activeClients.get(accountId);
   activeClients.delete(accountId);
   if (!stale) {
     return;
   }
 
+  const dispose = clientDisposers.get(stale);
+  if (dispose) {
+    await dispose();
+    return;
+  }
+  const socket = (stale as unknown as { socket?: { destroy(): void } }).socket;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     // Plugin recovery owns this client; teardown must not restart xmpp.js retries.
@@ -104,15 +113,29 @@ async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
     if (timer) {
       clearTimeout(timer);
     }
+    // stop() can reject or time out before closing TCP. Do not orphan that socket.
+    destroyTransport(socket);
   }
+}
+
+/** Reuse an established entity without stop()/offline clearing its SM session. */
+export interface SameClientReconnect {
+  client: ReturnType<typeof client>;
+  canReuse(): boolean;
+  run(): Promise<void>;
 }
 
 /**
  * Schedule a reconnection attempt with exponential backoff
  */
-export function scheduleReconnect(accountId: string, ctx: GatewayStartContext, log?: Logger): void {
+export function scheduleReconnect(
+  accountId: string,
+  ctx: GatewayStartContext,
+  log?: Logger,
+  sameClient?: SameClientReconnect
+): void {
   const state = reconnectStates.get(accountId);
-  if (!state || state.aborted) {
+  if (!state || state.aborted || ctx.abortSignal?.aborted || !ctx.account.enabled) {
     log?.debug?.(`[${accountId}] Reconnect aborted or not initialized`);
     return;
   }
@@ -142,6 +165,10 @@ export function scheduleReconnect(accountId: string, ctx: GatewayStartContext, l
       accountId,
       running: false,
       connected: false,
+      // Prevent OpenClaw 2026.8.2 health recovery from restarting this account.
+      terminalDisconnect: true,
+      reconnectNextAt: null,
+      reconnectPending: false,
       lastError: `Max reconnect attempts reached after ${state.attempts} tries`,
     });
     return;
@@ -160,26 +187,50 @@ export function scheduleReconnect(accountId: string, ctx: GatewayStartContext, l
     accountId,
     reconnectAttempts: state.attempts,
     reconnectNextAt: Date.now() + delay,
+    reconnectPending: true,
   });
 
   state.timer = setTimeout((): void => {
     void (async () => {
       const currentState = reconnectStates.get(accountId);
-      if (currentState !== state || currentState.aborted) {
+      if (
+        currentState !== state ||
+        currentState.aborted ||
+        ctx.abortSignal?.aborted ||
+        !ctx.account.enabled ||
+        (sameClient && activeClients.get(accountId) !== sameClient.client)
+      ) {
+        state.timer = undefined;
         log?.debug?.(`[${accountId}] Reconnect cancelled (aborted)`);
         return;
       }
       state.timer = undefined;
+      ctx.setStatus?.({ accountId, reconnectNextAt: null, reconnectPending: false });
 
       log?.info?.(`[${accountId}] Attempting reconnect (attempt ${state.attempts})...`);
 
       try {
+        if (sameClient?.canReuse()) {
+          await sameClient.run();
+          return;
+        }
         // Stop the old client before dropping the reference. Deleting the map
         // entry alone orphans the underlying @xmpp/client, which holds its TCP
         // socket open -- so every reconnect attempt leaked one connection to the
         // server. A server-side fault that keeps us reconnecting (e.g. STARTTLS
         // failing) would then exhaust the server's file descriptors.
         await stopStaleClient(accountId, log);
+
+        // Abort/config reload may happen while the bounded teardown is pending.
+        if (
+          reconnectStates.get(accountId) !== state ||
+          state.aborted ||
+          ctx.abortSignal?.aborted ||
+          !ctx.account.enabled ||
+          activeClients.has(accountId)
+        ) {
+          return;
+        }
 
         // Start a fresh connection
         if (startXmppConnectionFn) {

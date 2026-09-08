@@ -20,8 +20,8 @@ export function setupPresenceHandlers(
   xmpp: ReturnType<typeof client>,
   accountId: string,
   log?: Logger
-): void {
-  xmpp.on('stanza', (stanza): void => {
+): () => void {
+  const onStanza = (stanza: Element): void => {
     void (async () => {
       try {
         if (!stanza.is('presence')) {
@@ -104,7 +104,11 @@ export function setupPresenceHandlers(
         // Contain terminal reporting failures without retrying or rethrowing.
       }
     });
-  });
+  };
+  xmpp.on('stanza', onStanza);
+  return () => {
+    xmpp.off('stanza', onStanza);
+  };
 }
 
 /**

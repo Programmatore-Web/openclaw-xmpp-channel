@@ -230,6 +230,42 @@ describe('reconnect timer lifecycle', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(['abort', 'disable', 'state replacement', 'client replacement'])(
+    'does not create a client after %s during stale teardown',
+    async (mode) => {
+      const ctx = reconnectContext();
+      const controller = new AbortController();
+      ctx.abortSignal = controller.signal;
+      let finish!: () => void;
+      const stop = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          })
+      );
+      const destroy = vi.fn();
+      state.activeClients.set(accountId, { stop, socket: { destroy } } as unknown as XmppClient);
+      const start = vi.fn().mockResolvedValue(undefined);
+      reconnect.registerStartXmppConnection(start);
+      reconnect.initReconnectState(accountId);
+      reconnect.scheduleReconnect(accountId, ctx);
+      await vi.advanceTimersByTimeAsync(state.RECONNECT_BASE_DELAY_MS);
+      if (mode === 'abort') controller.abort();
+      if (mode === 'disable') ctx.account.enabled = false;
+      if (mode === 'state replacement') reconnect.initReconnectState(accountId);
+      if (mode === 'client replacement') {
+        state.activeClients.set(accountId, {
+          stop: vi.fn().mockResolvedValue(undefined),
+        } as unknown as XmppClient);
+      }
+      finish();
+      await vi.advanceTimersByTimeAsync(state.RECONNECT_MAX_DELAY_MS * 2);
+      expect(start).not.toHaveBeenCalled();
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
   it('keeps the missing start registration behavior', async () => {
     const log = { error: vi.fn() };
     reconnect.initReconnectState(accountId);

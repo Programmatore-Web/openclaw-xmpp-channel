@@ -29,8 +29,12 @@ export async function joinMuc(
   nick: string,
   log?: Logger,
   accountId?: string,
-  forceRejoin = true
+  forceRejoin = true,
+  signal?: AbortSignal
 ): Promise<void> {
+  if (signal?.aborted) {
+    return;
+  }
   const normalizedRoomJid = normalizeXmppRoomJid(roomJid);
   if (!normalizedRoomJid) {
     log?.warn?.(`[XMPP] Skipping invalid MUC room JID: ${roomJid}`);
@@ -52,7 +56,18 @@ export async function joinMuc(
       const leavePresence = xml('presence', { to: fullJid, type: 'unavailable' });
       await xmpp.send(leavePresence);
       // Wait for server to process the leave
-      await new Promise((r) => setTimeout(r, MUC_LEAVE_WAIT_MS));
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, MUC_LEAVE_WAIT_MS);
+        signal?.addEventListener('abort', finish, { once: true });
+        if (signal?.aborted) {
+          finish();
+        }
+      });
     } catch (err) {
       // Ignore errors on leave - room may not have had us joined
       log?.debug?.(
@@ -61,6 +76,9 @@ export async function joinMuc(
     }
   }
 
+  if (signal?.aborted) {
+    return;
+  }
   log?.debug?.(`[XMPP] Joining MUC: ${roomJid}`);
 
   const presence = xml(
@@ -69,20 +87,33 @@ export async function joinMuc(
     xml('x', { xmlns: 'http://jabber.org/protocol/muc' })
   );
 
+  let cleanupJoin: (() => void) | undefined;
   try {
     // Create promise to wait for self-presence (status code 110) if we have accountId
     let joinConfirmation: Promise<void> | undefined;
     if (accountId) {
       const pendingKey = `${accountId}:${normalizedRoomJid}`;
       joinConfirmation = new Promise<void>((resolve, reject) => {
+        const finish = () => {
+          clearTimeout(timeout);
+          signal?.removeEventListener('abort', finish);
+          if (pendingMucJoins.get(pendingKey)?.resolve === finish) {
+            pendingMucJoins.delete(pendingKey);
+          }
+          resolve();
+        };
+        cleanupJoin = finish;
         const timeout = setTimeout(() => {
-          pendingMucJoins.delete(pendingKey);
           // Don't reject for config rooms - just log and continue
           log?.warn?.(`[XMPP] MUC join confirmation timeout for ${roomJid}, proceeding anyway`);
-          resolve();
+          finish();
         }, MUC_JOIN_TIMEOUT_MS);
 
-        pendingMucJoins.set(pendingKey, { resolve, reject, timeout });
+        pendingMucJoins.set(pendingKey, { resolve: finish, reject, timeout });
+        signal?.addEventListener('abort', finish, { once: true });
+        if (signal?.aborted) {
+          finish();
+        }
       });
     }
 
@@ -94,6 +125,9 @@ export async function joinMuc(
       await joinConfirmation;
     }
 
+    if (signal?.aborted) {
+      return;
+    }
     // Track as joined
     if (accountId) {
       if (!joinedRooms.has(accountId)) {
@@ -106,5 +140,7 @@ export async function joinMuc(
     log?.error?.(
       `[XMPP] Failed to join MUC ${roomJid}: ${err instanceof Error ? err.message : String(err)}`
     );
+  } finally {
+    cleanupJoin?.();
   }
 }
