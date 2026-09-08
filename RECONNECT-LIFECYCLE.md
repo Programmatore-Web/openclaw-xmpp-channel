@@ -121,6 +121,12 @@ on retirement; all plugin operation timers and listeners are removed.
 
 ## Exact library coupling and tests
 
+The authoritative package ownership table, consumer-resolution policy and deliberate
+upgrade procedure are in [xmpp.js runtime compatibility](XMPP-RUNTIME-COMPATIBILITY.md).
+Only exact 0.14.0 is accepted. Registration and runtime loading fail closed before
+any native client/private transport adaptation when the actual resolved family
+cannot be verified. Upstream semver-compatible versions are not implicitly trusted.
+
 The adapter depends on 0.14.0's lower-level `connect/open/disconnect`, `_onElement`,
 `_onSeeOtherHost`, `_attachSocket/_detachSocket/_detachParser`, `_closeSocket`, `_ready`,
 `socket`/`parser` references, SM `enabled` flag, IQCaller `handlers` Deferreds, and TLS

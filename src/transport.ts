@@ -1,7 +1,8 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { once } from 'node:events';
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
+import { assertXmppRuntimeCompatible } from './xmpp-runtime-compat.js';
 import type { client, Element } from '@xmpp/client';
 
 interface NamespacedElement extends Element {
@@ -85,6 +86,7 @@ export function governTransport(
   current: () => boolean,
   redirect: (service?: string) => void
 ) {
+  assertXmppRuntimeCompatible();
   const entity = xmpp as unknown as Entity;
   const connect = entity.connect.bind(entity);
   const open = entity.open.bind(entity);

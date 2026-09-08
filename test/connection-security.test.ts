@@ -33,7 +33,7 @@ const xmppMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('@xmpp/client', () => ({ client: xmppMocks.client, xml: xmppMocks.xml }));
+vi.mock('../src/xmpp.js', () => ({ client: xmppMocks.client, xml: xmppMocks.xml }));
 
 import { startXmppConnection } from '../src/monitor.js';
 import { cleanupAccountState } from '../src/state.js';

@@ -4,7 +4,7 @@
  * Handles explicitly configured room join/leave operations and "gone" tracking.
  */
 
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import type { client } from '@xmpp/client';
 import type { Logger } from './types.js';
 import { normalizeXmppRoomJid } from './normalize.js';

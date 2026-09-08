@@ -4,6 +4,7 @@ import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/core';
 import { emptyPluginConfigSchema } from 'openclaw/plugin-sdk/core';
 import { xmppPlugin } from './src/channel.js';
 import { setXmppRuntime } from './src/runtime.js';
+import { assertXmppRuntimeCompatible } from './src/xmpp-runtime-compat.js';
 
 const plugin = {
   id: 'xmpp',
@@ -11,6 +12,7 @@ const plugin = {
   description: 'XMPP channel plugin (Prosody, ejabberd)',
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi): void {
+    assertXmppRuntimeCompatible();
     setXmppRuntime(api.runtime);
     api.registerChannel({ plugin: xmppPlugin });
   },

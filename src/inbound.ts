@@ -1,6 +1,6 @@
 /** Inbound XMPP authorization, routing, and text reply delivery. */
 
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import { randomUUID } from 'crypto';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import { bareJid } from './config-schema.js';

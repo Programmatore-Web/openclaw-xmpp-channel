@@ -38,8 +38,13 @@ it('ships a reachable, strictly typed public declaration graph', async () => {
     expect(
       pack.files.filter(
         ({ path }) =>
-          !['LICENSE', 'README.md', 'openclaw.plugin.json', 'package.json'].includes(path) &&
-          !path.startsWith('dist/')
+          ![
+            'LICENSE',
+            'README.md',
+            'XMPP-RUNTIME-COMPATIBILITY.md',
+            'openclaw.plugin.json',
+            'package.json',
+          ].includes(path) && !path.startsWith('dist/')
       )
     ).toEqual([]);
 

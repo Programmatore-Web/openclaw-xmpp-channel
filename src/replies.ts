@@ -9,7 +9,7 @@
  * The reply pointer, quoted body prefix, and matching fallback marker are
  * emitted together so older clients retain readable context.
  */
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import type { Element } from '@xmpp/client';
 
 /**

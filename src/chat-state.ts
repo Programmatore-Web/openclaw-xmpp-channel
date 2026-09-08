@@ -5,7 +5,7 @@
  * Provides functions to send typing indicators and read receipts
  */
 
-import { xml } from '@xmpp/client';
+import { xml } from './xmpp.js';
 import type { Logger } from './types.js';
 import { activeClients } from './state.js';
 
