@@ -103,6 +103,74 @@ function startXmppClient(xmpp: ReturnType<typeof client>): Promise<void> {
   });
 }
 
+interface StreamElement extends Element {
+  is(name: string, xmlns?: string): boolean;
+}
+
+interface StreamManagementClient {
+  streamManagement?: { enabled: boolean; enableSent: boolean };
+  on(event: 'element' | 'nonza' | 'disconnect', handler: (element: StreamElement) => void): void;
+  off(event: 'element' | 'nonza' | 'disconnect', handler: (element: StreamElement) => void): void;
+}
+
+/**
+ * In xmpp.js 0.14.0 resource binding emits online before SM sends enable.
+ * Neither false/false at online nor the raw enabled nonza proves readiness:
+ * the library must first process its negotiation response. It emits no enabled
+ * event, so inspect its state every 10ms. The 10s deadline only fails closed;
+ * it never authorizes traffic based on elapsed time. An advertised absence of
+ * SM (or an absent client module) needs no grace period.
+ */
+function waitForStreamManagement(
+  entity: StreamManagementClient,
+  advertised: boolean | undefined,
+  signal: AbortSignal,
+  isCurrent: () => boolean
+): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    let failed = false;
+    const finish = (ready: boolean, error?: Error) => {
+      clearInterval(poll);
+      clearTimeout(deadline);
+      entity.off('nonza', onNonza);
+      signal.removeEventListener('abort', onAbort);
+      if (error) {
+        reject(error);
+      } else {
+        resolve(ready);
+      }
+    };
+    const onAbort = () => finish(false);
+    const onNonza = (element: StreamElement) => {
+      if (element.is('failed', 'urn:xmpp:sm:3')) {
+        failed = true;
+      }
+    };
+    const check = () => {
+      const sm = entity.streamManagement;
+      if (signal.aborted || !isCurrent()) {
+        finish(false);
+      } else if (!sm || sm.enabled || ((advertised === false || failed) && !sm.enableSent)) {
+        finish(true);
+      } else {
+        return false;
+      }
+      return true;
+    };
+
+    entity.on('nonza', onNonza);
+    signal.addEventListener('abort', onAbort, { once: true });
+    const poll = setInterval(check, 10);
+    // Generous negotiation budget, bounded independently of keepalive traffic.
+    const deadline = setTimeout(() => {
+      if (!check()) {
+        finish(false, new Error('XEP-0198 negotiation did not settle within 10000ms'));
+      }
+    }, 10_000);
+    check();
+  });
+}
+
 /**
  * Get active client for an account
  */
@@ -179,6 +247,47 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   // Store client for outbound messaging
   activeClients.set(accountId, xmpp);
 
+  const smClient = xmpp as unknown as StreamManagementClient;
+  let smAdvertised: boolean | undefined;
+  let onlineGeneration = 0;
+  let onlineAbort: AbortController | undefined;
+  let onlineReady: Promise<boolean> | undefined;
+  const isActive = () => activeClients.get(accountId) === xmpp && !abortSignal?.aborted;
+  const cancelOnline = () => {
+    onlineGeneration++;
+    onlineAbort?.abort();
+    if (activeClients.get(accountId) === xmpp) {
+      stopKeepalive(accountId);
+    }
+  };
+  const onStreamElement = (element: StreamElement) => {
+    if (element.is('features', 'http://etherx.jabber.org/streams')) {
+      smAdvertised = Boolean(element.getChild('sm', 'urn:xmpp:sm:3'));
+    }
+  };
+  const onDisconnect = () => {
+    cancelOnline();
+    smAdvertised = undefined;
+    // Resource binding on the next stream must be able to send its own IQ.
+    onlineReady = undefined;
+  };
+  smClient.on('element', onStreamElement);
+  smClient.on('disconnect', onDisconnect);
+  abortSignal?.addEventListener('abort', cancelOnline);
+
+  // Also gate sends from outbound adapters and stanza handlers during online
+  // initialization. Protocol nonzas and pre-online resource binding pass through.
+  const send = xmpp.send.bind(xmpp);
+  xmpp.send = async (stanza) => {
+    const generation = onlineGeneration;
+    if (onlineReady && ['iq', 'message', 'presence'].includes(stanza.name)) {
+      if (!(await onlineReady) || generation !== onlineGeneration || !isActive()) {
+        throw new Error('XMPP online initialization was cancelled');
+      }
+    }
+    return send(stanza);
+  };
+
   // XEP-0198 Stream Management event handlers
   const streamManagement = (
     xmpp as unknown as {
@@ -190,6 +299,15 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
 
   if (streamManagement && typeof streamManagement.on === 'function') {
     streamManagement.on('resumed', () => {
+      if (!isActive()) {
+        return;
+      }
+      // xmpp.js resumes without emitting online again; SM is already enabled.
+      cancelOnline();
+      onlineReady = Promise.resolve(true);
+      clearReconnectState(accountId);
+      initReconnectState(accountId);
+      startKeepalive(xmpp, accountId, jidDomain, log);
       log?.info?.(`[${accountId}] XEP-0198 Stream Management: session resumed`);
       setStatus?.({ accountId, connected: true, lastConnectedAt: Date.now() });
     });
@@ -214,10 +332,35 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   // Connection events
   xmpp.on('online', (address): void => {
     void (async () => {
-      if (activeClients.get(accountId) !== xmpp) {
+      if (!isActive()) {
         return;
       }
+      cancelOnline();
+      const generation = onlineGeneration;
+      const isCurrent = () => isActive() && generation === onlineGeneration;
       log?.info?.(`[${accountId}] XMPP online as ${address.toString()}`);
+
+      onlineAbort = new AbortController();
+      onlineReady = waitForStreamManagement(smClient, smAdvertised, onlineAbort.signal, isCurrent);
+      try {
+        if (!(await onlineReady) || !isCurrent()) {
+          return;
+        }
+      } catch (err) {
+        if (!isCurrent()) {
+          return;
+        }
+        (xmpp as unknown as StartableXmppClient).reconnect?.stop();
+        // Plugin backoff owns recovery, including its bounded stale-client stop.
+        // Do not create another teardown task or await a potentially wedged stop.
+        scheduleReconnect(accountId, ctx, log);
+        throw err;
+      }
+
+      // Resource-binding online alone is not success: preserve attempts/backoff
+      // until the SM gate has settled for this current, unaborted generation.
+      clearReconnectState(accountId);
+      initReconnectState(accountId);
 
       // Start XEP-0199 keepalive pings
       startKeepalive(xmpp, accountId, jidDomain, log);
@@ -237,6 +380,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
         );
       }
 
+      if (!isCurrent()) {
+        return;
+      }
       // Send initial presence
       const initialPresence = xml(
         'presence',
@@ -253,6 +399,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
         );
       }
 
+      if (!isCurrent()) {
+        return;
+      }
       // Mark as connected
       setStatus?.({
         accountId,
@@ -268,6 +417,9 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
         if (config.groups && config.groups.length > 0) {
           log?.info?.(`[${accountId}] Joining ${config.groups.length} group rooms...`);
           for (const room of config.groups) {
+            if (!isCurrent()) {
+              return;
+            }
             await joinMuc(xmpp, room, nickname, log, accountId, true);
           }
         } else {
@@ -295,6 +447,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   });
 
   xmpp.on('offline', () => {
+    onDisconnect();
     if (activeClients.get(accountId) !== xmpp) {
       return;
     }
@@ -327,8 +480,6 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   // Start connection
   try {
     await startXmppClient(xmpp);
-    clearReconnectState(accountId);
-    initReconnectState(accountId);
   } catch (err) {
     // Once plugin backoff owns a failed startup, prevent this failed client's
     // built-in one-second reconnect loop from racing the scheduled replacement.
@@ -349,6 +500,11 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
         return;
       }
       cleanedUp = true;
+      abortSignal?.removeEventListener('abort', cleanup);
+      cancelOnline();
+      smClient.off('element', onStreamElement);
+      smClient.off('disconnect', onDisconnect);
+      abortSignal?.removeEventListener('abort', cancelOnline);
 
       const isCurrent = activeClients.get(accountId) === xmpp;
       if (isCurrent) {

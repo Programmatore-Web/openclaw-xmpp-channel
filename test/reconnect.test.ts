@@ -44,6 +44,100 @@ afterEach(() => {
 });
 
 describe('reconnect timer lifecycle', () => {
+  it.each(['resolved', 'rejected', 'wedged', 'absent'])(
+    'makes exhausted recovery final and bounds terminal teardown: %s client',
+    async (mode) => {
+      const ctx = reconnectContext();
+      const start = vi.fn().mockResolvedValue(undefined);
+      const log = { debug: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const nativeReconnect = { stop: vi.fn() };
+      const stop = vi.fn(() => {
+        expect(state.activeClients.has(accountId)).toBe(false);
+        expect(nativeReconnect.stop).toHaveBeenCalledTimes(1);
+        // Simulate teardown events requesting recovery again synchronously.
+        reconnect.scheduleReconnect(accountId, ctx, log);
+        if (mode === 'wedged') return new Promise<void>(() => {});
+        if (mode === 'rejected') return Promise.reject(new Error('stop failed'));
+        return Promise.resolve();
+      });
+      if (mode !== 'absent') {
+        state.activeClients.set(accountId, {
+          stop,
+          reconnect: nativeReconnect,
+        } as unknown as XmppClient);
+      }
+      reconnect.registerStartXmppConnection(start);
+      reconnect.initReconnectState(accountId);
+      const exhausted = state.reconnectStates.get(accountId)!;
+      exhausted.attempts = state.RECONNECT_MAX_ATTEMPTS;
+
+      expect(reconnect.scheduleReconnect(accountId, ctx, log)).toBeUndefined();
+      expect(state.activeClients.has(accountId)).toBe(false);
+      expect(exhausted.aborted).toBe(true);
+      expect(exhausted.timer).toBeUndefined();
+      expect(exhausted.attempts).toBe(state.RECONNECT_MAX_ATTEMPTS);
+      expect(ctx.setStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountId,
+          running: false,
+          connected: false,
+        })
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      if (mode === 'wedged') {
+        expect(vi.getTimerCount()).toBe(1);
+        await vi.advanceTimersByTimeAsync(4999);
+        expect(log.warn).not.toHaveBeenCalled();
+        expect(start).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(log.warn).toHaveBeenCalledWith(
+          `[${accountId}] Stale client stop exceeded 5000ms; abandoning it`
+        );
+      } else if (mode === 'rejected') {
+        expect(log.warn).toHaveBeenCalledWith(
+          `[${accountId}] Stale client stop failed: stop failed`
+        );
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      reconnect.scheduleReconnect(accountId, ctx, log);
+      await vi.advanceTimersByTimeAsync(state.RECONNECT_MAX_DELAY_MS * 2);
+      expect(start).not.toHaveBeenCalled();
+      expect(stop).toHaveBeenCalledTimes(mode === 'absent' ? 0 : 1);
+      expect(nativeReconnect.stop).toHaveBeenCalledTimes(mode === 'absent' ? 0 : 1);
+      expect(state.activeClients.has(accountId)).toBe(false);
+      expect(exhausted.timer).toBeUndefined();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
+
+  it('contains terminal teardown rejection even when terminal error reporting throws', async () => {
+    const ctx = reconnectContext();
+    const start = vi.fn().mockResolvedValue(undefined);
+    const stop = vi.fn(() => {
+      throw new Error('stop threw');
+    });
+    const log = {
+      error: vi.fn((message: string) => {
+        if (message.includes('Terminal XMPP teardown failed')) throw new Error('logger failed');
+      }),
+    };
+    state.activeClients.set(accountId, { stop } as unknown as XmppClient);
+    reconnect.registerStartXmppConnection(start);
+    reconnect.initReconnectState(accountId);
+    state.reconnectStates.get(accountId)!.attempts = state.RECONNECT_MAX_ATTEMPTS;
+    reconnect.scheduleReconnect(accountId, ctx, log);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(log.error).toHaveBeenCalledTimes(2);
+    expect(log.error).toHaveBeenLastCalledWith(
+      `[${accountId}] Terminal XMPP teardown failed: stop threw`
+    );
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(state.activeClients.has(accountId)).toBe(false);
+    expect(state.reconnectStates.get(accountId)?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('does not schedule a duplicate reconnect timer', () => {
     reconnect.initReconnectState(accountId);
     const ctx = reconnectContext();

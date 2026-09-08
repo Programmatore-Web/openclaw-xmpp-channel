@@ -83,6 +83,8 @@ async function stopStaleClient(accountId: string, log?: Logger): Promise<void> {
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
+    // Plugin recovery owns this client; teardown must not restart xmpp.js retries.
+    (stale as unknown as { reconnect?: { stop(): void } }).reconnect?.stop();
     await Promise.race([
       Promise.resolve(stale.stop()).catch((err) => {
         log?.warn?.(
@@ -121,12 +123,25 @@ export function scheduleReconnect(accountId: string, ctx: GatewayStartContext, l
   }
 
   if (state.attempts >= RECONNECT_MAX_ATTEMPTS) {
+    // Make exhaustion final before stop() can emit offline/disconnect. The
+    // shared teardown removes the active client immediately and bounds its stop.
+    abortReconnect(accountId);
+    void stopStaleClient(accountId, log).catch((err) => {
+      try {
+        log?.error?.(
+          `[${accountId}] Terminal XMPP teardown failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      } catch {
+        // Contain terminal reporting failures without retrying or rethrowing.
+      }
+    });
     log?.error?.(
       `[${accountId}] Max reconnect attempts (${RECONNECT_MAX_ATTEMPTS}) reached, giving up`
     );
     ctx.setStatus?.({
       accountId,
       running: false,
+      connected: false,
       lastError: `Max reconnect attempts reached after ${state.attempts} tries`,
     });
     return;
