@@ -196,6 +196,11 @@ export async function handleInboundMessage(
   setStatus?: (patch: ChannelAccountStatusPatch) => void,
   runState?: AccountLifecycle['runState']
 ): Promise<void> {
+  const replyClient = activeClients.get(accountId);
+  const isReplyCurrent = () =>
+    Boolean(replyClient) &&
+    activeClients.get(accountId) === replyClient &&
+    (!runState || runState.isActive());
   setStatus?.({ accountId, lastInboundAt: Date.now() });
 
   const senderBare = bareJid(message.from).toLowerCase();
@@ -315,18 +320,26 @@ export async function handleInboundMessage(
         responsePrefix: '',
         deliver: (payload: ReplyPayload) =>
           new Promise<void>((resolve) => {
+            if (!isReplyCurrent()) {
+              resolve();
+              return;
+            }
             delivered = true;
             debouncedDeliver(
               `${accountId}:${replyTo}`,
               payload,
               async (combined) => {
+                if (!isReplyCurrent()) {
+                  return;
+                }
                 await deliverReply(combined, message, accountId, senderIdentity, log, setStatus);
               },
               (err) => {
                 const error = err instanceof Error ? err.message : String(err);
                 log?.error?.(`[XMPP] Debounced reply delivery failed: ${error}`);
                 setStatus?.({ accountId, lastError: error });
-              }
+              },
+              replyClient
             );
             resolve();
           }),
@@ -334,7 +347,7 @@ export async function handleInboundMessage(
     })
   );
 
-  if (!delivered) {
+  if (!delivered && isReplyCurrent()) {
     await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
   }
 }
@@ -347,6 +360,7 @@ const pendingDeliveries = new Map<
     texts: string[];
     deliver: (combined: ReplyPayload) => Promise<void> | void;
     onError: (err: unknown) => void;
+    client: ReturnType<typeof activeClients.get>;
     timer?: ReturnType<typeof setTimeout>;
   }
 >();
@@ -355,12 +369,20 @@ function debouncedDeliver(
   key: string,
   payload: ReplyPayload,
   deliver: (combined: ReplyPayload) => Promise<void> | void,
-  onError: (err: unknown) => void
+  onError: (err: unknown) => void,
+  client: ReturnType<typeof activeClients.get>
 ): void {
   const markdown = payload.markdown;
   const text = (markdown === '' ? undefined : markdown) ?? payload.text ?? '';
-  const pending = pendingDeliveries.get(key) ?? { texts: [], deliver, onError };
-  if (text) {
+  const previous = pendingDeliveries.get(key);
+  // Never merge a retired client's text/status closure into its replacement.
+  if (previous && previous.client !== client) {
+    clearTimeout(previous.timer);
+  }
+  const pending =
+    previous && previous.client === client ? previous : { texts: [], deliver, onError, client };
+  const visibleText = text.trim();
+  if (visibleText && visibleText.toUpperCase() !== 'NO_REPLY' && visibleText !== 'REPLY_SKIP') {
     pending.texts.push(text);
   }
   if (pending.timer) {
@@ -424,13 +446,14 @@ async function deliverReply(
         ...children
       )
     );
-    setStatus?.({ accountId, lastOutboundAt: Date.now() });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log?.error?.(`[XMPP] Failed to send reply: ${error}`);
     setStatus?.({ accountId, lastError: error });
   } finally {
-    await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
+    if (activeClients.get(accountId) === client) {
+      await sendChatState(accountId, replyTo, 'active', log, message.isGroup);
+    }
   }
 }
 
