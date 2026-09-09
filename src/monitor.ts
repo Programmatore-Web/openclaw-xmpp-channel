@@ -551,7 +551,20 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
         throw new Error('XMPP online initialization was cancelled');
       }
     }
-    return send(stanza);
+    // All text delivery paths (including core-routed replies and sendText) use
+    // this client. The inbound dispatcher callback is not their shared owner.
+    const visible = stanza.name === 'message' && Boolean(stanza.getChildText('body')?.trim());
+    try {
+      await send(stanza);
+    } catch (err) {
+      if (visible && isActive()) {
+        setStatus?.({ accountId, lastError: err instanceof Error ? err.message : String(err) });
+      }
+      throw err;
+    }
+    if (visible && isActive()) {
+      setStatus?.({ accountId, lastOutboundAt: Date.now() });
+    }
   };
 
   // XEP-0198 Stream Management event handlers
