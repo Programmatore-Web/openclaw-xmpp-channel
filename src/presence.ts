@@ -45,13 +45,11 @@ export function derivePresence(
   status: ChannelAccountSnapshot
 ): OperationalPresence {
   const mode = config?.mode ?? 'auto';
+  // Availability reports admission, not activity. Ordinary busy/run accounting
+  // does not prevent this account from accepting more work.
   const unavailable =
     mode === 'unavailable' ||
-    (mode === 'auto' &&
-      (status.busy === true ||
-        (status.activeRuns ?? 0) > 0 ||
-        status.ingressUnavailable === true ||
-        status.lifecycle === 'blocked'));
+    (mode === 'auto' && (status.ingressUnavailable === true || status.lifecycle === 'blocked'));
   const text = unavailable ? config?.unavailableText : config?.availableText;
   return {
     state: unavailable ? 'unavailable' : 'available',

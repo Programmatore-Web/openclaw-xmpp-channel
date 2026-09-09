@@ -130,7 +130,7 @@ policies do not grant presence access. Subscriptions are not reciprocated.
 | Agent state | XMPP presence | Thunderbird |
 | --- | --- | --- |
 | Available: connected and operational | Ordinary presence, no `show`, priority `1` | Available / Disponibile |
-| Unavailable: connected but busy, blocked, or forced unavailable | `show=dnd`, priority `1`, no `type` | Unavailable / Non disponibile |
+| Unavailable: connected but ingress unavailable, blocked, or forced unavailable | `show=dnd`, priority `1`, no `type` | Unavailable / Non disponibile |
 | Offline: no live XMPP session | Session/resource loss; graceful stop sends `type=unavailable` | Offline / Non in linea |
 
 Operational unavailable **keeps the session online**. Offline is never a cosmetic
@@ -155,12 +155,18 @@ show that resource's presence.
 ```
 
 This fragment extends an account with credentials already configured.
-`presence.mode` defaults to `auto`: `busy === true`, `activeRuns > 0`,
-`ingressUnavailable === true`, or `lifecycle === "blocked"` selects unavailable;
-otherwise the connected agent is available. Authorized XMPP reply/reaction runs
-update OpenClaw's public run tracker. Status is sampled once per second, so runs
-shorter than that may not appear busy. `available` and `unavailable` force the
-operational state while connected. Neither can make a disconnected session online.
+Operational XMPP presence reports whether the account can accept work, not
+whether it is currently processing work. `presence.mode` defaults to `auto`:
+only `ingressUnavailable === true` or `lifecycle === "blocked"` selects unavailable;
+otherwise the connected agent is available. Ordinary `busy` and `activeRuns`
+accounting, including concurrent runs, does not change availability. Authorized
+XMPP reply/reaction runs still update OpenClaw's public run tracker.
+
+Status is sampled once per second; unchanged state and text send no duplicate
+presence. `available` forces ordinary presence even when ingress is unavailable
+or lifecycle is blocked. `unavailable` forces DND regardless of automatic signals.
+Both require a genuine current online XMPP session; neither makes a disconnected
+session online or synthesizes offline.
 
 `presence.availableText` and `presence.unavailableText` are optional public text.
 Only configured text is sent; runtime errors and internal reasons are never copied
@@ -186,7 +192,8 @@ offline appears when that resource/session actually disappears.
 
 This feature targets direct contacts in Thunderbird. Room-specific occupant
 `show` updates are a follow-up; MUC authorization and join policy are unchanged.
-See [presence design and SDK findings](AGENT-PRESENCE.md) for lifecycle details.
+See [D6 semantics and SDK findings](D6-REVIEW.md) for the current decision and
+[D5 presence design](AGENT-PRESENCE.md) for historical lifecycle details.
 
 ### Multi-account example
 

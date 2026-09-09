@@ -116,6 +116,9 @@ async function fixture() {
   lifetimes.push(startXmppConnection(ctx));
   await vi.advanceTimersByTimeAsync(0);
   expect(status).toMatchObject({ connected: true, running: true, lastError: null });
+  const initialPresence = physical.mock.calls
+    .map(([stanza]) => stanza)
+    .filter((stanza) => stanza.name === 'presence' && !stanza.attrs.to && !stanza.attrs.type);
   physical.mockClear();
   setStatus.mockClear();
   const inbound = (group = false) => {
@@ -152,7 +155,25 @@ async function fixture() {
     physical.mock.calls
       .map(([stanza]) => stanza)
       .filter((stanza) => stanza.getChildText('body')?.trim());
-  return { xmpp, physical, status, setStatus, ctx, controller, dispatch, inbound, direct, visible };
+  const broadcasts = () => [
+    ...initialPresence,
+    ...physical.mock.calls
+      .map(([stanza]) => stanza)
+      .filter((stanza) => stanza.name === 'presence' && !stanza.attrs.to && !stanza.attrs.type),
+  ];
+  return {
+    xmpp,
+    physical,
+    status,
+    setStatus,
+    ctx,
+    controller,
+    dispatch,
+    inbound,
+    direct,
+    visible,
+    broadcasts,
+  };
 }
 
 beforeEach(() => {
@@ -494,7 +515,7 @@ describe('D3 physical outbound status ownership', () => {
     expect(h.status).toEqual(stopped);
   });
 
-  it('keeps D5 busy until both simultaneous routed dispatches finish', async () => {
+  it('D6 accepts simultaneous authorized DM runs and keeps available through 2, 1, 0 active runs', async () => {
     const h = await fixture();
     const first = deferred();
     const second = deferred();
@@ -511,13 +532,46 @@ describe('D3 physical outbound status ownership', () => {
     h.inbound();
     await vi.advanceTimersByTimeAsync(0);
     expect(h.status).toMatchObject({ busy: true, activeRuns: 2 });
+    expect(h.dispatch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.broadcasts().map((s) => s.getChildText('show'))).toEqual([null]);
     first.resolve();
     await vi.advanceTimersByTimeAsync(0);
     expect(h.status).toMatchObject({ busy: true, activeRuns: 1 });
+    expect(h.status.lastOutboundAt).toBe(Date.now());
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.broadcasts()).toHaveLength(1);
     second.resolve();
     await vi.advanceTimersByTimeAsync(0);
     expect(h.status).toMatchObject({ busy: false, activeRuns: 0 });
+    expect(h.status.lastOutboundAt).toBe(Date.now());
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.broadcasts()).toHaveLength(1);
     expect(h.visible()).toHaveLength(2);
+  });
+
+  it('D6 consecutive authorized DM SDK runs stay available at start, processing, reply and end', async () => {
+    const h = await fixture();
+    expect(h.broadcasts().map((s) => s.getChildText('show'))).toEqual([null]);
+    for (let run = 0; run < 3; run++) {
+      const processing = deferred();
+      h.dispatch.mockImplementationOnce(async () => {
+        await processing.promise;
+        await h.direct('D6-OK');
+        return { queuedFinal: true };
+      });
+      h.inbound();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(h.dispatch).toHaveBeenCalledTimes(run + 1);
+      expect(h.status).toMatchObject({ busy: true, activeRuns: 1 });
+      expect(h.broadcasts()).toHaveLength(1);
+      processing.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.status).toMatchObject({ busy: false, activeRuns: 0, lastOutboundAt: Date.now() });
+      expect(h.visible()).toHaveLength(run + 1);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(h.broadcasts()).toHaveLength(1);
+    }
   });
 
   describe.each(['adapter', 'callback'] as const)('late %s completion', (path) => {

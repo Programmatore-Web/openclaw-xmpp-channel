@@ -142,6 +142,8 @@ artificial unmonitored client does not constitute a running Gateway account.
 
 D5 semantics are preserved: busy/activeRuns cover dispatcher work, including
 awaited routed sends, and end before the callback's detached buffer is flushed.
+The later [D6 decision](D6-REVIEW.md) preserves this activity accounting while
+removing busy/activeRuns as automatic DND triggers.
 No sleeps, status polling, new persistence store or presence-derived timestamp
 were added. Existing asynchronous error containment is retained.
 

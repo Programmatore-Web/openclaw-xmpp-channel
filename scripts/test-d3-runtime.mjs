@@ -2,6 +2,8 @@
 // XMPP client construction, the model resolver and inbound agent/session plumbing
 // are fixtures. Dispatcher, outbound routing/adapter, monitor, run tracker and
 // Gateway account store/status handler are real.
+// D6 also observes physical presence across the real SDK run and explicit
+// Gateway admission/lifecycle patches. No model or external XMPP connection runs.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -114,6 +116,9 @@ try {
         const started = deferred();
         const physical = deferred();
         const active = deferred();
+        const processing = deferred();
+        const releaseProcessing = deferred();
+        const presenceWrites = [];
         const bodyWrites = [];
         let callbacks = 0;
         let adapterCalls = 0;
@@ -129,6 +134,8 @@ try {
             xmpp.emit('online', { toString: () => 'bot@example.com/fixture' });
           },
           send: async (stanza) => {
+            if (stanza.name === 'presence' && !stanza.attrs.to && !stanza.attrs.type)
+              presenceWrites.push(stanza);
             if (stanza.getChild('active', 'http://jabber.org/protocol/chatstates'))
               active.resolve();
             if (stanza.getChild('query', 'jabber:iq:roster'))
@@ -220,6 +227,8 @@ try {
                     },
                   },
                   replyResolver: async () => {
+                    processing.resolve();
+                    await releaseProcessing.promise;
                     if (mode === 'routed' || mode === 'failed') {
                       routedResult = await routeReply({
                         cfg,
@@ -270,6 +279,19 @@ try {
               xml('body', {}, 'hello')
             )
           );
+          await processing.promise;
+          const poll = async () => {
+            mock.timers.tick(1000);
+            await new Promise((resolve) => setImmediate(resolve));
+          };
+          const shows = () => presenceWrites.map((stanza) => stanza.getChildText('show'));
+          assert.equal(gateway.getStatus().busy, true);
+          assert.equal(gateway.getStatus().activeRuns, 1);
+          assert.equal(gateway.getStatus().ingressUnavailable, undefined);
+          assert.equal(gateway.getStatus().lifecycle, 'ready');
+          await poll();
+          assert.deepEqual(shows(), [null], 'D6 ordinary SDK processing stays available');
+          releaseProcessing.resolve();
           if (mode === 'callback') {
             await queued.promise;
             await runEnded.promise;
@@ -314,6 +336,45 @@ try {
             getChannelActivity({ channel: 'xmpp', accountId: 'default' }).outboundAt,
             null
           );
+          await poll();
+          assert.deepEqual(shows(), [null], 'D6 SDK run end must not toggle presence');
+          const patch = (status) => gateway.setStatus({ accountId: 'default', ...status });
+          patch({ ingressUnavailable: true });
+          await poll();
+          assert.deepEqual(shows(), [null, 'dnd']);
+          patch({ ingressUnavailable: undefined, busy: true, activeRuns: 3 });
+          await poll();
+          assert.deepEqual(shows(), [null, 'dnd', null]);
+          patch({ lifecycle: 'blocked', terminalDisconnect: true });
+          await poll();
+          assert.deepEqual(shows(), [null, 'dnd', null, 'dnd']);
+          patch({ busy: false, activeRuns: 0, connected: true });
+          await poll();
+          assert.equal(gateway.getStatus().lifecycle, 'blocked', 'terminal block is sticky');
+          assert.equal(presenceWrites.length, 4);
+          patch({ lifecycle: 'ready', terminalDisconnect: undefined });
+          await poll();
+          assert.deepEqual(shows(), [null, 'dnd', null, 'dnd', null]);
+          // Both forced modes override all four automatic signals on the real
+          // Gateway context, but actual transport offline blocks publication.
+          gateway.account.config.presence = { mode: 'available' };
+          patch({ busy: true, activeRuns: 3, ingressUnavailable: true, lifecycle: 'blocked' });
+          await poll();
+          assert.equal(presenceWrites.length, 5);
+          gateway.account.config.presence.mode = 'unavailable';
+          await poll();
+          assert.equal(shows().at(-1), 'dnd');
+          patch({ busy: false, activeRuns: 0, ingressUnavailable: undefined, lifecycle: 'ready' });
+          await poll();
+          assert.equal(presenceWrites.length, 6);
+          xmpp.status = 'offline';
+          gateway.account.config.presence.mode = 'available';
+          await poll();
+          assert.equal(presenceWrites.length, 6, 'snapshot connected cannot fabricate presence');
+          xmpp.status = 'online';
+          await poll();
+          assert.equal(presenceWrites.length, 7);
+          assert.equal(shows().at(-1), null);
           await manager.stopChannel('xmpp');
           const stopped = manager.getRuntimeSnapshot();
           gateway.setStatus({ accountId: 'default', lastOutboundAt: 999_999 });
@@ -323,6 +384,7 @@ try {
             'Gateway must reject a retired task patch'
           );
         } finally {
+          releaseProcessing.resolve();
           physical.resolve();
           await manager.stopChannel('xmpp');
           mock.timers.reset();
