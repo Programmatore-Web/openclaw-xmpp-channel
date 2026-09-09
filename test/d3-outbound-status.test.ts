@@ -13,6 +13,7 @@ vi.mock('../src/rooms.js', () => ({ joinMuc: mocks.joinMuc }));
 
 import { startXmppConnection } from '../src/monitor.js';
 import { xmppPlugin } from '../src/channel.js';
+import { sendXmppMessage } from '../src/outbound.js';
 import { setXmppRuntime } from '../src/runtime.js';
 import { accountLifecycles, activeClients, cleanupAccountState } from '../src/state.js';
 import { trackMucOccupantIdentity } from '../src/muc-identity.js';
@@ -252,6 +253,101 @@ describe('D3 physical outbound status ownership', () => {
       });
     }
   );
+
+  describe.each(['client', 'message', 'adapter'] as const)('throwing status sink: %s', (path) => {
+    it('preserves physical success without sending a duplicate', async () => {
+      const h = await fixture();
+      const send = deferred();
+      const events: string[] = [];
+      h.physical.mockImplementation(async () => {
+        events.push('sending');
+        await send.promise;
+        events.push('sent');
+      });
+      h.setStatus.mockImplementation((patch) => {
+        if (patch.lastOutboundAt !== undefined) {
+          events.push('status');
+          throw new Error('fixture status publication failed');
+        }
+        return Object.assign(h.status, patch);
+      });
+      const result = (
+        path === 'client'
+          ? h.xmpp.send(xml('message', { type: 'chat' }, xml('body', {}, 'D3-P2-OK')))
+          : path === 'message'
+            ? sendXmppMessage(h.ctx.account.config, 'user@example.com', 'D3-P2-OK')
+            : h.direct('D3-P2-OK')
+      ).then(
+        (value) => ({ succeeded: true, value }),
+        (error: unknown) => ({ succeeded: false, error })
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events).toEqual(['sending']);
+      expect(h.setStatus).not.toHaveBeenCalled();
+      expect(h.status.lastOutboundAt).toBeNull();
+      send.resolve();
+      const expected =
+        path === 'client'
+          ? undefined
+          : path === 'message'
+            ? { ok: true, messageId: expect.any(String) }
+            : { channel: 'xmpp', messageId: expect.any(String) };
+      expect(await result).toEqual({ succeeded: true, value: expected });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(events).toEqual(['sending', 'sent', 'status']);
+      expect(h.setStatus).toHaveBeenCalledExactlyOnceWith({ accountId, lastOutboundAt: 10_000 });
+      expect(h.status).toMatchObject({ lastOutboundAt: null, lastError: null });
+      expect(h.physical).toHaveBeenCalledTimes(1);
+      expect(h.visible()).toHaveLength(1);
+    });
+
+    it('preserves the original physical failure when error publication throws', async () => {
+      const h = await fixture();
+      const send = deferred();
+      const physicalError = new Error('fixture original physical failure');
+      const statusError = new Error('fixture status publication failed');
+      h.status.lastOutboundAt = 5_000;
+      h.physical.mockImplementation(async () => send.promise);
+      h.setStatus.mockImplementation((patch) => {
+        if (patch.lastError !== undefined) throw statusError;
+        return Object.assign(h.status, patch);
+      });
+      const result = (
+        path === 'client'
+          ? h.xmpp.send(xml('message', { type: 'chat' }, xml('body', {}, 'D3-P2-FAIL')))
+          : path === 'message'
+            ? sendXmppMessage(h.ctx.account.config, 'user@example.com', 'D3-P2-FAIL')
+            : h.direct('D3-P2-FAIL')
+      ).then(
+        (value) => ({ succeeded: true as const, value }),
+        (error: unknown) => ({ succeeded: false as const, error })
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.setStatus).not.toHaveBeenCalled();
+      send.reject(physicalError);
+      const outcome = await result;
+      if (path === 'message') {
+        expect(outcome).toEqual({
+          succeeded: true,
+          value: { ok: false, error: physicalError.message },
+        });
+      } else {
+        expect(outcome.succeeded).toBe(false);
+        if (!outcome.succeeded) {
+          if (path === 'client') expect(outcome.error).toBe(physicalError);
+          else expect(outcome.error).toEqual(physicalError);
+          expect(outcome.error).not.toBe(statusError);
+        }
+      }
+      await vi.advanceTimersByTimeAsync(500);
+      expect(h.setStatus).toHaveBeenCalledExactlyOnceWith({
+        accountId,
+        lastError: physicalError.message,
+      });
+      expect(h.status.lastOutboundAt).toBe(5_000);
+      expect(h.physical).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it.each([false, true])(
     'delayed callback retains status after dispatch ends, group=%s',

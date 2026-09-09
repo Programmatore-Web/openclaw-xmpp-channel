@@ -558,12 +558,20 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       await send(stanza);
     } catch (err) {
       if (visible && isActive()) {
-        setStatus?.({ accountId, lastError: err instanceof Error ? err.message : String(err) });
+        try {
+          setStatus?.({ accountId, lastError: err instanceof Error ? err.message : String(err) });
+        } catch {
+          // Status telemetry must not mask the original transport failure.
+        }
       }
       throw err;
     }
     if (visible && isActive()) {
-      setStatus?.({ accountId, lastOutboundAt: Date.now() });
+      try {
+        setStatus?.({ accountId, lastOutboundAt: Date.now() });
+      } catch {
+        // Status telemetry must not turn a delivered message into a retry.
+      }
     }
   };
 
