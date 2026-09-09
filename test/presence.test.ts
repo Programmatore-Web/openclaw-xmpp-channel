@@ -159,40 +159,165 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-describe('Thunderbird mapping and exact SDK snapshot', () => {
-  it.each([
-    [{ busy: false }, 'available'],
-    [{ activeRuns: 0 }, 'available'],
-    [{ busy: true }, 'unavailable'],
-    [{ activeRuns: 2 }, 'unavailable'],
-    [{ ingressUnavailable: true }, 'unavailable'],
-    [{ lifecycle: 'blocked' }, 'unavailable'],
-  ] as const)('derives %j as %s', (snapshot, state) => {
-    const result = derivePresence(undefined, { accountId, ...snapshot });
-    expect(result.state).toBe(state);
-    const stanza = buildOperationalPresence(result);
-    expect(stanza.attrs.type).toBeUndefined();
-    expect(stanza.getChildText('priority')).toBe('1');
-    expect(stanza.getChildText('show')).toBe(state === 'unavailable' ? 'dnd' : null);
+describe('D6 operational availability and exact SDK snapshot', () => {
+  const activity = [
+    {},
+    { busy: false, activeRuns: 0 },
+    { busy: true },
+    { activeRuns: 1 },
+    { activeRuns: 3 },
+    { busy: true, activeRuns: 2 },
+    { busy: false, activeRuns: 2 },
+    { busy: true, activeRuns: 0 },
+  ] as const;
+  const gates = [
+    { ingressUnavailable: true },
+    { lifecycle: 'blocked' },
+    { ingressUnavailable: true, lifecycle: 'blocked' },
+  ] as const;
+  const snapshots = [
+    ...activity.map((status) => [status, 'available'] as const),
+    ...gates.flatMap((gate) => activity.map((a) => [{ ...a, ...gate }, 'unavailable'] as const)),
+  ];
+
+  it.each(snapshots)('auto derives %j as %s', (snapshot, state) => {
+    const status: ChannelAccountSnapshot = { accountId, ...snapshot };
+    for (const config of [undefined, { mode: 'auto' as const }]) {
+      const result = derivePresence(config, status);
+      expect(result.state).toBe(state);
+      const stanza = buildOperationalPresence(result);
+      expect(stanza.attrs.type).toBeUndefined();
+      expect(stanza.getChildText('priority')).toBe('1');
+      expect(stanza.getChildText('show')).toBe(state === 'unavailable' ? 'dnd' : null);
+    }
   });
-  it.each(['available', 'unavailable'] as const)('forces %s while connected', async (mode) => {
-    const h = fixture({ presence: { mode } });
-    h.status.busy = mode === 'available';
+  it.each(['starting', 'ready', 'recovering', 'stopped'] as const)(
+    'does not infer offline or DND from lifecycle=%s',
+    (lifecycle) => {
+      expect(derivePresence(undefined, { accountId, lifecycle }).state).toBe('available');
+    }
+  );
+  it.each(['available', 'unavailable'] as const)(
+    'forces %s over every online status',
+    async (mode) => {
+      const h = fixture({ presence: { mode } });
+      Object.assign(h.status, {
+        busy: true,
+        activeRuns: 3,
+        ingressUnavailable: true,
+        lifecycle: 'blocked',
+      });
+      await h.controller.ready(true);
+      for (const [snapshot] of snapshots) {
+        Object.assign(
+          h.status,
+          {
+            busy: undefined,
+            activeRuns: undefined,
+            ingressUnavailable: undefined,
+            lifecycle: undefined,
+          },
+          snapshot
+        );
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(h.broadcasts()).toHaveLength(1);
+        expect(h.broadcasts()[0].getChildText('show')).toBe(mode === 'unavailable' ? 'dnd' : null);
+        expect(h.broadcasts()[0].attrs.type).toBeUndefined();
+      }
+    }
+  );
+  describe.each(['auto', 'available', 'unavailable'] as const)(
+    'mode=%s session ownership',
+    (mode) => {
+      it.each(['disconnect', 'replace'] as const)(
+        'cannot publish before online or after %s',
+        async (action) => {
+          const h = fixture({ presence: { mode }, allowFrom: [alice] });
+          Object.assign(h.status, {
+            connected: true,
+            busy: true,
+            activeRuns: 3,
+            ingressUnavailable: true,
+            lifecycle: 'blocked',
+          });
+          h.disconnect();
+          await h.controller.ready(true);
+          await h.controller.handle('probe', alice);
+          await h.controller.handle('subscribe', alice);
+          await vi.advanceTimersByTimeAsync(3000);
+          expect(h.send).not.toHaveBeenCalled(); // Snapshot connected cannot fabricate a resource.
+          h.reconnect();
+          await h.controller.ready(true);
+          expect(h.broadcasts()).toHaveLength(1);
+          h[action]();
+          Object.assign(h.status, { ingressUnavailable: undefined, lifecycle: 'ready' });
+          await h.controller.ready(false);
+          await h.controller.handle('probe', alice);
+          await h.controller.handle('subscribe', alice);
+          await vi.advanceTimersByTimeAsync(3000);
+          expect(h.presence()).toHaveLength(1);
+        }
+      );
+    }
+  );
+  it.each(gates)('publishes actual unavailability and recovery across polls: %j', async (gate) => {
+    const h = fixture();
     await h.controller.ready(true);
-    expect(h.broadcasts()).toHaveLength(1);
-    expect(h.broadcasts()[0].getChildText('show')).toBe(mode === 'unavailable' ? 'dnd' : null);
-    h.disconnect();
-    await h.controller.ready(false);
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(h.broadcasts()).toHaveLength(1);
+    for (const snapshot of activity) {
+      Object.assign(h.status, { busy: undefined, activeRuns: undefined }, snapshot);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.broadcasts()).toHaveLength(1);
+    }
+    Object.assign(h.status, gate);
+    for (const snapshot of activity) {
+      Object.assign(h.status, { busy: undefined, activeRuns: undefined }, snapshot);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.broadcasts()).toHaveLength(2);
+    }
+    Object.assign(h.status, {
+      ingressUnavailable: undefined,
+      lifecycle: 'ready',
+      busy: true,
+      activeRuns: 3,
+    });
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(h.broadcasts().map((s) => s.getChildText('show'))).toEqual([null, 'dnd', null]);
   });
+  it.each(['subscribe', 'probe'])(
+    'trusted %s reads activity and genuine gates immediately; strangers stay denied',
+    async (type) => {
+      const h = fixture({ allowFrom: [alice], dmPolicy: 'open' });
+      await h.controller.ready(true);
+      for (const [status, show] of [
+        [{ busy: true, activeRuns: 2 }, null],
+        [{ ingressUnavailable: true }, 'dnd'],
+        [{ ingressUnavailable: undefined, lifecycle: 'blocked' }, 'dnd'],
+        [{ lifecycle: 'ready' }, null],
+      ] as const) {
+        Object.assign(h.status, status);
+        h.send.mockClear();
+        await h.controller.handle(type, 'stranger@example.com/mobile');
+        expect(h.presence()).toHaveLength(0);
+        await h.controller.handle(type, `${alice}/desktop`);
+        const directed = h.presence().filter((s) => !s.attrs.type);
+        expect(directed).toHaveLength(1);
+        expect(directed[0].attrs.to).toBe(alice);
+        expect(directed[0].getChildText('show')).toBe(show);
+      }
+    }
+  );
   it('publishes only configured safe text, with XML escaping', async () => {
-    const h = fixture({ presence: { availableText: 'Ready <&>', unavailableText: 'Busy' } });
+    const h = fixture({
+      presence: { availableText: 'Ready <&>', unavailableText: 'Temporarily unavailable' },
+    });
     Object.assign(h.status, { lastError: 'PRIVATE_EXCEPTION', stateReason: 'PRIVATE_PROVIDER' });
     await h.controller.ready(true);
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(1000);
-    expect(h.broadcasts().map((s) => s.getChildText('status'))).toEqual(['Ready <&>', 'Busy']);
+    expect(h.broadcasts().map((s) => s.getChildText('status'))).toEqual([
+      'Ready <&>',
+      'Temporarily unavailable',
+    ]);
     expect(h.broadcasts().map(String).join()).not.toContain('PRIVATE_');
     expect(String(h.broadcasts()[0])).toContain('&lt;&amp;&gt;');
   });
@@ -222,10 +347,10 @@ describe('deduplication and session ownership', () => {
     await h.controller.ready(true);
     await vi.advanceTimersByTimeAsync(4000);
     expect(h.broadcasts()).toHaveLength(1);
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(4000);
     expect(h.broadcasts()).toHaveLength(2);
-    h.status.busy = false;
+    h.status.ingressUnavailable = undefined;
     await vi.advanceTimersByTimeAsync(4000);
     expect(h.broadcasts()).toHaveLength(3);
     h.config.presence = { availableText: 'Ready' };
@@ -237,7 +362,7 @@ describe('deduplication and session ownership', () => {
     const h = fixture();
     await h.controller.ready(true);
     h.disconnect();
-    h.status.busy = changed;
+    h.status.ingressUnavailable = changed ? true : undefined;
     await vi.advanceTimersByTimeAsync(3000);
     expect(h.broadcasts()).toHaveLength(1);
     h.reconnect();
@@ -286,7 +411,7 @@ describe('deduplication and session ownership', () => {
           resolve = r;
         })
     );
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(3000);
     expect(h.broadcasts()).toHaveLength(2);
     resolve();
@@ -310,25 +435,27 @@ describe('deduplication and session ownership', () => {
 
 describe('P2 physical publication ownership', () => {
   it.each([false, true])(
-    'coalesces late success to the latest state/text (initial busy=%s)',
-    async (busy) => {
+    'coalesces late success to the latest state/text (initial ingress unavailable=%s)',
+    async (blocked) => {
       const h = fixture();
-      h.status.busy = busy;
+      h.status.ingressUnavailable = blocked ? true : undefined;
       const pending = deferredWrite();
       const original = h.send.getMockImplementation()!;
       h.send.mockImplementationOnce(original).mockImplementationOnce(() => pending.promise);
       const ready = h.controller.ready(true);
       await vi.advanceTimersByTimeAsync(1000);
-      h.status.busy = !busy;
-      h.config.presence = { availableText: 'Latest ready', unavailableText: 'Latest busy' };
+      h.status.ingressUnavailable = blocked ? undefined : true;
+      h.config.presence = { availableText: 'Latest ready', unavailableText: 'Latest unavailable' };
       await vi.advanceTimersByTimeAsync(19000);
       await ready;
       expect(h.broadcasts()).toHaveLength(1);
       pending.resolve();
       await vi.advanceTimersByTimeAsync(0);
       expect(h.broadcasts()).toHaveLength(2);
-      expect(h.broadcasts()[1].getChildText('show')).toBe(busy ? null : 'dnd');
-      expect(h.broadcasts()[1].getChildText('status')).toBe(busy ? 'Latest ready' : 'Latest busy');
+      expect(h.broadcasts()[1].getChildText('show')).toBe(blocked ? null : 'dnd');
+      expect(h.broadcasts()[1].getChildText('status')).toBe(
+        blocked ? 'Latest ready' : 'Latest unavailable'
+      );
       await vi.advanceTimersByTimeAsync(20000);
       expect(h.broadcasts()).toHaveLength(2); // Latest successful publication is remembered.
     }
@@ -338,11 +465,11 @@ describe('P2 physical publication ownership', () => {
     await h.controller.ready(true);
     const pending = deferredWrite();
     h.send.mockImplementationOnce(() => pending.promise);
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(1000);
-    h.status.busy = false;
+    h.status.ingressUnavailable = undefined;
     await vi.advanceTimersByTimeAsync(7000);
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(7000);
     expect(h.broadcasts()).toHaveLength(2);
     pending.resolve();
@@ -354,7 +481,7 @@ describe('P2 physical publication ownership', () => {
     await h.controller.ready(true);
     const pending = deferredWrite();
     h.send.mockImplementationOnce(() => pending.promise);
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(20000);
     expect(h.broadcasts()).toHaveLength(2);
     pending.reject(new Error('test late rejection'));
@@ -375,9 +502,9 @@ describe('P2 physical publication ownership', () => {
       await h.controller.ready(true);
       const pending = deferredWrite();
       h.send.mockImplementationOnce(() => pending.promise);
-      h.status.busy = true;
+      h.status.ingressUnavailable = true;
       await vi.advanceTimersByTimeAsync(1000);
-      h.status.busy = false;
+      h.status.ingressUnavailable = undefined;
       if (action === 'dispose') h.controller.dispose();
       else h.replace();
       await vi.advanceTimersByTimeAsync(20000);
@@ -397,7 +524,7 @@ describe('P2 physical publication ownership', () => {
       await h.controller.ready(true);
       const old = deferredWrite();
       h.send.mockImplementationOnce(() => old.promise);
-      h.status.busy = true;
+      h.status.ingressUnavailable = true;
       await vi.advanceTimersByTimeAsync(1000);
       h.disconnect();
       h.controller.reset();
@@ -408,7 +535,7 @@ describe('P2 physical publication ownership', () => {
       const ready = h.controller.ready(true);
       await vi.advanceTimersByTimeAsync(6000);
       await ready;
-      h.status.busy = false;
+      h.status.ingressUnavailable = undefined;
       if (outcome === 'resolve') old.resolve();
       else old.reject(new Error('old stream failure'));
       await vi.advanceTimersByTimeAsync(20000);
@@ -432,7 +559,7 @@ describe('P2 physical publication ownership', () => {
       await vi.advanceTimersByTimeAsync(1000);
       h.disconnect();
       await ready;
-      h.status.busy = changed;
+      h.status.ingressUnavailable = changed ? true : undefined;
       h.reconnect();
       await h.controller.ready(false);
       await vi.advanceTimersByTimeAsync(20000);
@@ -452,7 +579,7 @@ describe('P2 physical publication ownership', () => {
     await h.controller.ready(true);
     const pending = deferredWrite();
     h.send.mockImplementationOnce(() => pending.promise);
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(1000);
     expect(vi.getTimerCount()).toBe(2); // Poll plus one wait budget.
     await vi.advanceTimersByTimeAsync(5000);
@@ -503,7 +630,7 @@ describe('trusted subscriptions and probes', () => {
     '%s: authorized=%s',
     async (_name, config, allowed) => {
       const h = fixture(config);
-      h.status.busy = true;
+      h.status.ingressUnavailable = true;
       await h.controller.ready(true);
       h.send.mockClear();
       await h.controller.handle('subscribe', `${alice}/desktop`);
@@ -543,7 +670,7 @@ describe('trusted subscriptions and probes', () => {
   it('probe derives current state immediately without waiting for the next poll', async () => {
     const h = fixture({ presenceAllowFrom: [alice] });
     await h.controller.ready(true);
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await h.controller.handle('probe', alice);
     expect(h.presence().at(-1)?.getChildText('show')).toBe('dnd');
     expect(h.broadcasts()).toHaveLength(1);

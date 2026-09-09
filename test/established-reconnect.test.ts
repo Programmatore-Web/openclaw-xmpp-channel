@@ -461,7 +461,7 @@ describe('D5 presence with native SM and account lifecycle', () => {
       lifetimes.push(startXmppConnection(h.ctx));
       await vi.advanceTimersByTimeAsync(20000);
       h.outage();
-      h.status.busy = changed;
+      h.status.ingressUnavailable = changed ? true : undefined;
       h.restore();
       await vi.advanceTimersByTimeAsync(1010);
       expect(h.xmpp.status).toBe('online');
@@ -531,11 +531,11 @@ describe('D5 presence with native SM and account lifecycle', () => {
         });
       }
     });
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(20000);
     expect(broadcasts(h)).toHaveLength(2);
     h.outage();
-    h.status.busy = false;
+    h.status.ingressUnavailable = undefined;
     h.restore();
     await vi.advanceTimersByTimeAsync(1010);
     expect(h.xmpp.status).toBe('online');
@@ -561,11 +561,11 @@ describe('D5 presence with native SM and account lifecycle', () => {
           })
         : original(stanza)
     );
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     await vi.advanceTimersByTimeAsync(20000);
     expect(broadcasts(h)).toHaveLength(2);
     h.outage();
-    h.status.busy = false;
+    h.status.ingressUnavailable = undefined;
     h.restore();
     await vi.advanceTimersByTimeAsync(1010);
     expect(h.xmpp.status).toBe('online');
@@ -593,7 +593,7 @@ describe('D5 presence with native SM and account lifecycle', () => {
             })
           : original(stanza)
       );
-      h.status.busy = true;
+      h.status.ingressUnavailable = true;
       await vi.advanceTimersByTimeAsync(20000);
       if (action === 'abort') h.controller.abort();
       else if (action === 'terminal') {
@@ -632,7 +632,7 @@ describe('D5 presence with native SM and account lifecycle', () => {
   });
   it('routes trusted subscriptions and probes through the current controller', async () => {
     const h = await fixture(true, { presenceAllowFrom: ['alice@example.com'] });
-    h.status.busy = true;
+    h.status.ingressUnavailable = true;
     for (const type of ['subscribe', 'probe']) {
       h.xmpp._onElement(xml('presence', { from: 'alice@example.com/desktop', type }));
     }
@@ -647,7 +647,7 @@ describe('D5 presence with native SM and account lifecycle', () => {
     const h = await fixture();
     h.ctx.getStatus = () => {
       h.controller.abort();
-      return { accountId, busy: true };
+      return { accountId, lifecycle: 'blocked' };
     };
     await vi.advanceTimersByTimeAsync(1000);
     expect(broadcasts(h)).toHaveLength(1);
@@ -678,12 +678,13 @@ describe('D5 presence with native SM and account lifecycle', () => {
       .filter((s) => s.name === 'presence' && s.attrs.type === 'unavailable');
 
   it.each([false, true])(
-    'native resumed sends exactly one correction only if changed=%s',
+    'D6 native resumed sends exactly one correction only if genuine availability changed=%s',
     async (changed) => {
       const h = await fixture();
       expect(broadcasts(h)).toHaveLength(1);
       h.outage();
-      h.status.busy = changed;
+      h.status.ingressUnavailable = changed ? true : undefined;
+      Object.assign(h.status, { busy: true, activeRuns: 2 });
       await vi.advanceTimersByTimeAsync(1000);
       expect(broadcasts(h)).toHaveLength(1);
       h.restore();
@@ -777,15 +778,18 @@ describe('D5 presence with native SM and account lifecycle', () => {
     expect(endings(h)).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(0);
   });
-  it('abrupt disconnect and terminal stop cannot send either DND or synthetic offline', async () => {
-    const h = await fixture(true, { presence: { mode: 'available' } });
-    h.outage();
-    h.status.busy = true;
-    h.controller.abort();
-    await vi.advanceTimersByTimeAsync(3000);
-    expect(broadcasts(h)).toHaveLength(1);
-    expect(endings(h)).toHaveLength(0);
-  });
+  it.each(['auto', 'available', 'unavailable'] as const)(
+    'D6 abrupt disconnect in %s cannot send DND or synthetic offline',
+    async (mode) => {
+      const h = await fixture(true, { presence: { mode } });
+      h.outage();
+      h.status.ingressUnavailable = true;
+      h.controller.abort();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(broadcasts(h)).toHaveLength(1);
+      expect(endings(h)).toHaveLength(0);
+    }
+  );
   it('six healthy account reloads keep constant live listeners/timers and retire all old state', async () => {
     let h = await fixture();
     const timers = vi.getTimerCount();
@@ -804,7 +808,7 @@ describe('D5 presence with native SM and account lifecycle', () => {
       expect(accountLifecycles.size).toBe(1);
       expect(broadcasts(h)).toHaveLength(1);
       const count = old.send.mock.calls.length;
-      old.status.busy = true;
+      old.status.ingressUnavailable = true;
       old.xmpp.streamManagement.emit('resumed');
       await vi.advanceTimersByTimeAsync(1000);
       expect(old.send.mock.calls.length).toBe(count);

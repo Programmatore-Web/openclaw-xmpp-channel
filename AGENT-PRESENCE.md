@@ -1,5 +1,10 @@
 # D5 agent presence design
 
+> Historical D5 design and review evidence. [D6](D6-REVIEW.md) supersedes only
+> the activity-to-availability mapping below: ordinary `busy`/`activeRuns` no
+> longer select DND. Current auto presence uses `ingressUnavailable === true`
+> or `lifecycle === "blocked"`. The original D5 findings are retained as history.
+
 Target: `@openclaw/xmpp` 4.1.1, OpenClaw 2026.8.2, installed `@xmpp/client`
 0.14.0. The dependency range remains `^0.14.0`.
 
