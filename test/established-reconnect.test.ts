@@ -35,6 +35,8 @@ import {
 type NativeClient = EventEmitter & {
   status: string;
   options: { service: string; domain: string };
+  Transport: unknown;
+  _findTransport(service: string): unknown;
   socket: TestTransport | { destroy(): void } | null;
   _attachSocket(socket: TestTransport): void;
   reconnect: { delay: number; stop(): void; scheduleReconnect(): void };
@@ -72,6 +74,8 @@ async function fixture(monitored: boolean | 'prepared' = true, config: Partial<X
     username: 'bot',
     resource: 'test-resource',
   }) as unknown as NativeClient;
+  // connect() is simulated below; retain the native framing it normally selects.
+  xmpp.Transport = xmpp._findTransport(xmpp.options.service);
   clients.push(xmpp);
   let unavailable = false;
   let refuseResume = false;

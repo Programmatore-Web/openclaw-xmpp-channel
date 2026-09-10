@@ -16,10 +16,42 @@ to that disposer, removes plugin lifecycle/error/stanza/SM listeners, cancels on
 readiness and MUC waits, clears message-mapping expiry timers, and stops keepalive.
 Old callbacks cannot publish status for a newer account owner.
 
+Account stop and client disposal each share one completion promise across repeated
+calls. Stop invalidates application work, disables the run tracker and cancels retry
+scheduling synchronously. The account lifetime resolves only after transport cleanup
+finishes. An owner remains discoverable while its teardown is pending, so Gateway
+abort followed by reload also waits for that bounded completion. A replacement
+stopped while waiting carries its predecessor's completion forward.
+
 Account cleanup calls this same disposer before deleting state. Aborting first or
 removing state first both finish with running/connected false, no pending retry,
 no active client and no retained account lifecycle. Terminal exhaustion retains
 only the account lifetime until abort, so the supervisor cannot restart it implicitly.
+
+## Deliberate logical shutdown
+
+A current online client moves from operational to stopping, then retired, even
+before the monitor's SM readiness gate settles. Terminal unavailable additionally
+requires monitor session readiness and establishment; logical close does not.
+During stopping, the adapter retains the old socket and parser solely for terminal
+shutdown. New application writes, connect/open operations, socket attachments and
+redirects are denied. Previously pending application writes are cancelled at the
+adapter boundary; their late callbacks cannot destroy the retained transport or
+publish status for a replacement.
+
+A private async context binds terminal writes to that entity and its captured socket.
+The unavailable stage permits one exact `<presence type="unavailable"/>` frame. The
+close stage permits one native SM acknowledgement and the transport's exact footer.
+Each frame permission is consumed once. Application message, presence and IQ writes
+remain denied even from a close hook; stopping does not grant general write access.
+
+The monitor attempts unavailable, then runs the native `stop()` / `disconnect()` /
+`_closeStream()` path. Native SM close hooks execute before the XML footer. The parser
+can process the peer's closing stream before native socket shutdown. Final disposal
+follows native stop completion, or forces retirement when the total deadline wins.
+Merely destroying TCP or setting local status to offline does not prove a logical
+XMPP session ended: XEP-0198 can retain an unfinished stream. Healthy deliberate
+shutdown sends the real stream footer; accidental loss keeps the existing resume path.
 
 ## Retry policy and Stream Management
 
@@ -100,17 +132,24 @@ releases the startup waiter and all of its listeners.
   the entity's native timeout (2000ms by default), covering the whole owning operation.
   An open deadline includes its header write; the STARTTLS negotiation deadline
   includes both sending the request and receiving the response.
-- Graceful disconnect: 5000ms total, matching the existing stale-stop budget and
+- Recovery disconnect: 5000ms total, matching the existing stale-stop budget and
   allowing two native 2000ms close phases plus a 1000ms allowance.
 - Stream negotiation and the existing SM readiness gate: 10000ms each.
-- Disposed-client `stop()`: 5000ms. Sockets are already destroyed before this wait.
+- Deliberate shutdown: 5000ms total, including the unavailable wait of at most
+  250ms, SM hooks, footer write, peer close and socket close. Terminal disconnect
+  does not start a second five-second budget. At the deadline, forced retirement
+  finishes before the shared stop promise and account lifetime resolve.
+- Clients without a current online stream retain immediate retirement followed
+  by a bounded `stop()`; that path does not attempt unavailable. A live online
+  stream still uses terminal logical close while monitor readiness is pending.
 
 **Writes have no independent delivery deadline.** Normal message, presence, IQ,
 keepalive and MUC sends do not inherit a two-second timeout. The write adapter only
 observes completion and cancellation. When an owning open/STARTTLS/negotiation/close
 operation times out, entity retirement cancels pending writes before their late
-callbacks can advance a protocol operation. The same cancellation runs on abort or
-replacement. A stuck close write is bounded by the whole 5000ms close budget.
+callbacks can advance a protocol operation. Deliberate stop cancels prior application
+waiters without immediately destroying the terminal socket. A stuck close write is
+bounded by the whole 5000ms close budget.
 No application-delivery timeout policy is introduced.
 
 Socket references are captured before native disconnect can detach them. TCP sockets
@@ -127,8 +166,9 @@ Only exact 0.14.0 is accepted. Registration and runtime loading fail closed befo
 any native client/private transport adaptation when the actual resolved family
 cannot be verified. Upstream semver-compatible versions are not implicitly trusted.
 
-The adapter depends on 0.14.0's lower-level `connect/open/disconnect`, `_onElement`,
+The adapter depends on 0.14.0's lower-level `connect/open/disconnect/stop`, `_onElement`,
 `_onSeeOtherHost`, `_attachSocket/_detachSocket/_detachParser`, `_closeSocket`, `_ready`,
+the `_closeStream()` hook/write/parser ordering, `footer`/`footerElement`,
 `socket`/`parser` references, SM `enabled` flag, IQCaller `handlers` Deferreds, and TLS
 wrapper `socket`/`timeout`. These internals must be rechecked before a dependency upgrade.
 It does not modify installed packages. It leaves native SM resume/fresh negotiation, SASL, resource binding and middleware
@@ -146,6 +186,13 @@ certificate-error containment, secure readiness and the TLS 1.3 delay.
 `test/online-lifecycle.test.ts`, `test/reconnect.test.ts`, `test/rooms.test.ts` and
 `test/transport-failure.test.ts` cover readiness, scheduler, MUC cancellation and
 strict unhandled-rejection containment with a loopback transport fault.
+
+`test/graceful-teardown.test.ts` uses native connection/framing, XML parsers, binding
+and SM with a deterministic socket peer and virtual clock. It verifies terminal
+write ordering and session removal, bounded failures, shared stop completion,
+Gateway-style abort/replacement sequencing, repeated reloads without retained old
+sessions, rejection of application writes from close hooks, and harmless late writes.
+Its accidental-loss control exercises same-client resume, queue replay and backoff.
 
 The R1 tests exercise bounded A → B → A → B redirects, invalid targets, stable
 resumption/fresh-session resets, repeated redirect loops through all 20 scheduled

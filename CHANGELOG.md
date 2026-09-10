@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Cleanly close healthy XMPP streams on deliberate account stop or reload within
+  the existing shutdown budget, while preserving XEP-0198 recovery after accidental
+  transport loss. Replacement lifecycles wait for bounded transport cleanup.
+
 ### Changed
 
 - Reduced the current plugin baseline to minimal text-only XMPP functionality.

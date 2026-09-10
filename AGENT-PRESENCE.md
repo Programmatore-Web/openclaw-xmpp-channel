@@ -245,11 +245,19 @@ is still owned by xmpp.js and is distinct from a new logical publication.
 
 Deliberate current-account shutdown cancels operational tasks synchronously.
 If a current established stream is still online, it starts one best-effort
-`<presence type="unavailable"/>` before transport teardown. Waiting for the write
-is bounded to 250 ms and uses the original send, not an async initialization gate. Application
-callbacks are already disabled. The transport cannot reconnect, and the D2 total
-5-second disposal budget remains. Stale or disconnected clients cannot take this
-path. Abrupt loss sends neither DND nor synthetic offline; the server determines
+`<presence type="unavailable"/>` before logical stream close. Waiting for this single
+attempt is bounded to 250 ms inside the total 5-second disposal budget. The original
+send runs with a private terminal capability for that exact frame and old socket;
+application callbacks and reconnect are already disabled. Native `stop()` then runs
+the SM close hooks, writes the actual stream footer, processes peer close when
+available within budget, and shuts down the socket before final retirement.
+Unavailable failure or timeout does not retry or prevent the logical close attempt.
+A current online stream also closes logically before monitor readiness has settled;
+that transition is not eligible for terminal unavailable, so it skips presence only.
+At the total deadline, forced retirement completes before the account lifetime resolves.
+Stale or disconnected clients cannot take this graceful path. Unavailable presence
+alone is not evidence that an XEP-0198 logical session ended. Abrupt loss sends neither
+DND nor synthetic offline; the server determines
 resource loss, potentially after its SM retention timeout. Another live resource
 for the same JID can keep the contact online.
 

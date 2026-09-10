@@ -1,6 +1,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { once } from 'node:events';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { xml } from './xmpp.js';
 import { assertXmppRuntimeCompatible } from './xmpp-runtime-compat.js';
 import type { client, Element } from '@xmpp/client';
@@ -25,7 +26,7 @@ interface Entity {
   status: string;
   socket?: Transport | null;
   parser?: Transport | null;
-  streamManagement?: { enabled: boolean };
+  streamManagement?: { enabled: boolean; inbound?: number };
   iqCaller?: { handlers: Map<string, { promise: Promise<unknown>; reject(error: Error): void }> };
   _ready?: (resumed?: boolean) => void;
   options: { service: string; domain: string; lang?: string };
@@ -35,6 +36,8 @@ interface Entity {
   restart?: () => Promise<unknown>;
   sendReceive?: (element: Element) => Promise<NamespacedElement>;
   write?: (data: string) => Promise<unknown>;
+  footer?: (element: Element | undefined) => string;
+  footerElement?: () => Element | undefined;
   _closeSocket?: () => Promise<unknown>;
   reconnect?: { stop(): void };
   _attachSocket?: (socket: Transport) => void;
@@ -117,6 +120,13 @@ export function governTransport(
   let isCurrent: (() => boolean) | undefined = current;
   let onRedirect: ((service?: string) => void) | undefined = redirect;
   let retired = false;
+  let stopping = false;
+  let disposed = false;
+  // Only a terminal operation started by this adapter owns this context. A
+  // callback on the same entity does not acquire permission merely by stopping.
+  type TerminalWrites = { socket: typeof socket; frames: Set<string> };
+  const terminalScope = new AsyncLocalStorage<TerminalWrites>();
+  let terminalWrites: TerminalWrites | undefined;
   let authorized = false;
   let busy = false;
   let closing: Promise<void> | undefined;
@@ -127,7 +137,12 @@ export function governTransport(
   if (socket) {
     track(socket);
   }
-  const valid = () => !retired && isCurrent?.() === true;
+  const valid = () => !retired && !stopping && isCurrent?.() === true;
+  const terminal = () =>
+    stopping &&
+    !retired &&
+    terminalWrites !== undefined &&
+    terminalScope.getStore() === terminalWrites;
   const cancelled = () => new Error('XMPP transport operation cancelled');
   const destroyAll = () => {
     if (socket) {
@@ -158,7 +173,10 @@ export function governTransport(
     set: (next: Transport | null) => {
       if (next && !valid()) {
         destroyTransport(next);
-        socket = null;
+        // A late attachment cannot replace the socket retained for shutdown.
+        if (!stopping) {
+          socket = null;
+        }
       } else {
         socket = next;
         if (next) {
@@ -192,7 +210,10 @@ export function governTransport(
   // Native middleware may report errors after its entity has been retired.
   // No monitor closure or error listener is retained to consume those events.
   if (emit) {
-    entity.emit = (event, ...args) => (retired ? false : emit(event, ...args));
+    entity.emit = (event, ...args) =>
+      retired || (stopping && event === 'error' && !entity.listenerCount?.('error'))
+        ? false
+        : emit(event, ...args);
   }
   if (ready) {
     entity._ready = (resumed) => {
@@ -290,7 +311,9 @@ export function governTransport(
   };
   const requestRedirect = (element: Element) => {
     if (!valid()) {
-      destroyAll();
+      if (!stopping) {
+        destroyAll();
+      }
       return;
     }
     try {
@@ -358,6 +381,8 @@ export function governTransport(
     // Let native SM cancel its own timers, without emitting offline on the
     // resumable failure path. The entity is never reused after a timeout.
     retired = true;
+    terminalWrites = undefined;
+    terminalScope.disable();
     operationAbort.abort();
     emit?.('disconnect');
     if (entity.listenerCount?.('error')) {
@@ -385,7 +410,8 @@ export function governTransport(
   // containing protocol operation; ordinary application writes have no timer.
   const operate = <T>(
     operation: () => Promise<T>,
-    deadline?: { name: string; ms: number }
+    deadline?: { name: string; ms: number },
+    permitted: () => boolean = valid
   ): Promise<T> =>
     new Promise<T>((resolve, reject) => {
       let settled = false;
@@ -418,8 +444,15 @@ export function governTransport(
       cancellations.add(cancel);
       try {
         void Promise.resolve(operation()).then((result) => {
-          if (!valid()) {
-            destroyAll();
+          // Cancellation owns settlement. In particular a pre-stop application
+          // write must not destroy the socket retained by terminal shutdown.
+          if (settled) {
+            return;
+          }
+          if (!permitted()) {
+            if (!stopping) {
+              destroyAll();
+            }
             fail(cancelled());
           } else {
             finish(() => resolve(result));
@@ -432,22 +465,53 @@ export function governTransport(
   const bounded = <T>(operation: () => Promise<T>, name: string, ms: number) =>
     operate(operation, { name, ms });
   if (write) {
-    entity.write = (data) => (valid() ? operate(() => write(data)) : Promise.reject(cancelled()));
+    entity.write = (data) => {
+      if (valid()) {
+        return operate(() => write(data));
+      }
+      const capability = terminalWrites;
+      if (
+        terminal() &&
+        capability &&
+        capability.socket === socket &&
+        capability.frames.delete(data)
+      ) {
+        return operate(
+          () => write(data),
+          undefined,
+          () => !retired && terminalWrites === capability
+        );
+      }
+      return Promise.reject(cancelled());
+    };
   }
   if (closeSocket) {
-    entity._closeSocket = () => (retired ? Promise.resolve() : closeSocket());
+    entity._closeSocket = () =>
+      retired || (stopping && !terminal()) ? Promise.resolve() : closeSocket();
   }
   const close = (): Promise<void> => {
+    const terminalClose = terminal();
+    if (stopping && !retired && !terminalClose) {
+      return Promise.reject(cancelled());
+    }
     if (closing) {
       return closing;
     }
     closing = (async () => {
       try {
         if (!retired && disconnect) {
-          await bounded(disconnect, 'disconnect', TRANSPORT_CLOSE_BUDGET_MS);
+          if (terminalClose) {
+            // The monitor owns one total deadline including unavailable. Do not
+            // restart a second five-second budget here.
+            await operate(disconnect, undefined, () => !retired);
+          } else {
+            await bounded(disconnect, 'disconnect', TRANSPORT_CLOSE_BUDGET_MS);
+          }
         }
       } finally {
-        destroyAll();
+        if (!terminalClose) {
+          destroyAll();
+        }
         closing = undefined;
       }
     })();
@@ -458,7 +522,7 @@ export function governTransport(
 
   return {
     get reusable() {
-      return !retired && !upgrading;
+      return !retired && !stopping && !upgrading;
     },
     get busy() {
       return busy;
@@ -494,7 +558,9 @@ export function governTransport(
         authorized = false;
         await connecting;
         if (!valid()) {
-          destroyAll();
+          if (!stopping) {
+            destroyAll();
+          }
           throw cancelled();
         }
         await entity.open(entity.options);
@@ -505,8 +571,48 @@ export function governTransport(
     },
     close,
     retire,
-    dispose() {
+    beginShutdown() {
+      if (retired || stopping) {
+        return undefined;
+      }
+      stopping = true;
       entity.reconnect?.stop();
+      for (const cancel of cancellations) {
+        cancel();
+      }
+      const retainedSocket = socket;
+      const run = <T>(frames: string[], operation: () => Promise<T>): Promise<T> => {
+        if (retired) {
+          return Promise.reject(cancelled());
+        }
+        const capability = { socket: retainedSocket, frames: new Set(frames) };
+        terminalWrites = capability;
+        return terminalScope.run(capability, operation);
+      };
+      return {
+        unavailable: (send: () => Promise<void>) =>
+          run([xml('presence', { type: 'unavailable' }).toString()], send),
+        stop: (stop: () => Promise<unknown>) =>
+          run(
+            [
+              xml('a', {
+                xmlns: 'urn:xmpp:sm:3',
+                h: String(entity.streamManagement?.inbound ?? 0),
+              }).toString(),
+              entity.footer?.(entity.footerElement?.()) ?? '',
+            ],
+            stop
+          ),
+      };
+    },
+    dispose() {
+      if (disposed) {
+        return;
+      }
+      disposed = true;
+      if (!stopping) {
+        entity.reconnect?.stop();
+      }
       retire();
       isCurrent = undefined;
       onRedirect = undefined;

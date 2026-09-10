@@ -230,25 +230,31 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
     finish = resolve;
   });
   let ended = false;
+  let stopping: Promise<void> | undefined;
   const owner: AccountLifecycle = {
     ctx,
-    start: () => startClient(ctx, owner),
-    async stop() {
-      if (ended) {
-        return;
+    start: () => (ended ? Promise.resolve() : startClient(ctx, owner)),
+    stop() {
+      if (stopping) {
+        return stopping;
       }
+      let complete!: () => void;
+      stopping = new Promise<void>((resolve) => {
+        complete = resolve;
+      });
       ended = true;
       ctx.abortSignal?.removeEventListener('abort', onAbort);
       const current = accountLifecycles.get(accountId) === owner;
       const active = activeClients.get(accountId);
       const ownsState = !active || clientDisposers.get(active) === owner.disposeClient;
       owner.runState?.deactivate();
+      if (current && ownsState) {
+        abortReconnect(accountId);
+      }
       const closing = owner.disposeClient?.(true);
       owner.disposeClient = undefined;
       if (current) {
-        accountLifecycles.delete(accountId);
         if (ownsState) {
-          abortReconnect(accountId);
           clearReconnectState(accountId);
           stopKeepalive(accountId);
           clearClientRoomState(accountId);
@@ -266,8 +272,18 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
           }
         }
       }
-      finish();
-      await closing;
+      const finishStop = () => {
+        if (accountLifecycles.get(accountId) === owner) {
+          accountLifecycles.delete(accountId);
+        }
+        finish();
+        complete();
+      };
+      // Retain ownership until cleanup completes, even when Gateway aborts
+      // before starting its replacement. An owner stopped while waiting for a
+      // predecessor also carries that predecessor's bounded completion.
+      void Promise.all([stopped, closing]).then(finishStop, finishStop);
+      return stopping;
     },
   };
   const onAbort = () => {
@@ -286,7 +302,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   if (stopped) {
     await stopped;
   }
-  if (accountLifecycles.get(accountId) === owner) {
+  if (!ended && accountLifecycles.get(accountId) === owner) {
     if (!reconnectStates.has(accountId) || reconnectStates.get(accountId)?.aborted) {
       initReconnectState(accountId);
     }
@@ -821,19 +837,25 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
 
   // Register disposal before starting any asynchronous operation. Replacement,
   // abort and state cleanup all use this same idempotent path.
+  let disposal: Promise<void> | undefined;
   const dispose = (graceful = false): Promise<void> => {
-    if (disposed) {
-      return Promise.resolve();
+    if (disposal) {
+      return disposal;
     }
+    let complete!: () => void;
+    disposal = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
     // Deliberate stop may already have an aborted signal or disabled account.
     // Ownership and the actual online stream, not operational mode, decide this.
-    const sendOffline =
+    const canCloseStream =
       graceful &&
       entity.status === 'online' &&
-      sessionReady &&
-      established &&
       accountLifecycles.get(accountId) === owner &&
       activeClients.get(accountId) === xmpp;
+    // Native online precedes monitor readiness. That stream still needs a
+    // logical close even when terminal unavailable is not yet eligible.
+    const sendOffline = canCloseStream && sessionReady && established;
     disposed = true;
     startupHandoff.abort();
     cancelOnline();
@@ -860,64 +882,66 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
       stopKeepalive(accountId);
       clearClientRoomState(accountId);
     }
+    const terminal = canCloseStream ? transport.beginShutdown() : undefined;
+    let finished = false;
+    const finishDispose = () => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timer);
+      // The deadline must release the actual transport before lifetime completion.
+      transport.dispose();
+      complete();
+    };
+    const timer = setTimeout(() => {
+      try {
+        log?.warn?.(
+          `[${accountId}] Stale client stop exceeded ${TRANSPORT_CLOSE_BUDGET_MS}ms; abandoning it`
+        );
+      } catch {
+        /* Teardown completion must not depend on logging. */
+      }
+      finishDispose();
+    }, TRANSPORT_CLOSE_BUDGET_MS);
+    if (!terminal) {
+      transport.dispose();
+    }
     let offline: Promise<void> | undefined;
-    if (sendOffline) {
-      // Start the write synchronously while this stream is still current.
-      // All application callbacks are already cancelled; no transport can reopen.
+    if (terminal && sendOffline) {
       offline = new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, PRESENCE_STOP_BUDGET_MS);
+        const presenceTimer = setTimeout(resolve, PRESENCE_STOP_BUDGET_MS);
         try {
-          void send(xml('presence', { type: 'unavailable' }))
+          void terminal
+            .unavailable(() => send(xml('presence', { type: 'unavailable' })))
             .catch(() => {})
             .finally(() => {
-              clearTimeout(timer);
+              clearTimeout(presenceTimer);
               resolve();
             });
         } catch {
-          clearTimeout(timer);
+          clearTimeout(presenceTimer);
           resolve();
         }
       });
     }
-    const retire = () => transport.dispose();
-    if (!offline) {
-      retire();
-    }
-    // Bound even a user-supplied/failed stop implementation; transport references
-    // are already destroyed and the retired entity cannot create another socket.
-    return new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
+    void Promise.resolve(offline)
+      .then(() => {
+        if (!finished) {
+          return terminal ? terminal.stop(() => xmpp.stop()) : xmpp.stop();
+        }
+      })
+      .catch((err: unknown) => {
         try {
           log?.warn?.(
-            `[${accountId}] Stale client stop exceeded ${TRANSPORT_CLOSE_BUDGET_MS}ms; abandoning it`
+            `[${accountId}] Stale client stop failed: ${err instanceof Error ? err.message : String(err)}`
           );
         } catch {
-          /* Teardown completion must not depend on logging. */
+          /* Contain stop and reporting failures together. */
         }
-        resolve();
-      }, TRANSPORT_CLOSE_BUDGET_MS);
-      void Promise.resolve()
-        .then(() => offline)
-        .then(() => {
-          if (offline) {
-            retire();
-          }
-        })
-        .then(() => xmpp.stop())
-        .catch((err: unknown) => {
-          try {
-            log?.warn?.(
-              `[${accountId}] Stale client stop failed: ${err instanceof Error ? err.message : String(err)}`
-            );
-          } catch {
-            /* Contain stop and reporting failures together. */
-          }
-        })
-        .finally(() => {
-          clearTimeout(timer);
-          resolve();
-        });
-    });
+      })
+      .finally(finishDispose);
+    return disposal;
   };
   clientDisposers.set(xmpp, dispose);
   owner.disposeClient = dispose;

@@ -45,7 +45,12 @@ const boundary = pathToFileURL(join(repository, 'dist/src/xmpp.js')).href;
 const hooks = registerHooks({
   resolve(specifier, context, next) {
     if (specifier.startsWith('openclaw/plugin-sdk/')) {
-      return { url: pathToFileURL(hostRequire.resolve(specifier)).href, shortCircuit: true };
+      // Resolve from the selected host without re-entering this same hook via
+      // require.resolve(), which also participates in synchronous Node hooks.
+      return next(specifier, {
+        ...context,
+        parentURL: pathToFileURL(join(host, 'package.json')).href,
+      });
     }
     if (specifier === './xmpp.js' && context.parentURL?.endsWith('/dist/src/monitor.js')) {
       return { url: 'xmpp-d3:client', shortCircuit: true };
