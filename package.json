@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/xmpp",
-  "version": "4.1.1",
+  "version": "4.1.2",
   "description": "Minimal text-only XMPP channel plugin for OpenClaw",
   "type": "module",
   "main": "dist/index.js",
@@ -29,7 +29,8 @@
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\" \"index.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"index.ts\"",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test:secret-runtime": "node scripts/test-secret-runtime.mjs"
   },
   "repository": {
     "type": "git",

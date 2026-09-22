@@ -87,7 +87,7 @@ describe('OpenClaw Control UI channel manifest', () => {
     expect(Object.keys(accountProperties)).toEqual(expect.arrayContaining([...accountFieldNames]));
     expect(accountProperties.enabled?.type).toBe('boolean');
     expect(accountProperties.jid?.type).toBe('string');
-    expect(accountProperties.password?.type).toBe('string');
+    expect(accountProperties.password).toEqual(runtimeOverrideProperties.password);
     expect(accountProperties.allowFrom?.type).toBe('array');
     expect(accountProperties.dmAllowlist?.type).toBe('array');
     expect(accountProperties.groupAllowFrom?.type).toBe('array');

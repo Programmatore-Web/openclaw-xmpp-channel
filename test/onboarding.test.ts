@@ -236,10 +236,7 @@ describe('XMPP onboarding DM policy account scope', () => {
     );
     expect(select).not.toHaveBeenCalled();
     expect(updated.dmAllowlist).toEqual(['root-peer@example.com']);
-    expect(updated.accounts?.work?.dmAllowlist).toEqual([
-      'user@example.com',
-      'second@example.com',
-    ]);
+    expect(updated.accounts?.work?.dmAllowlist).toEqual(['user@example.com', 'second@example.com']);
     expect(updated.accounts?.sibling?.dmAllowlist).toEqual(['sibling-peer@example.com']);
   });
 
@@ -366,5 +363,43 @@ describe('XMPP default-account layout compatibility', () => {
     );
 
     expect(updated.accounts?.sibling).toEqual(siblingBefore);
+  });
+});
+
+describe('XMPP setup retains source password references', () => {
+  it.each([
+    { source: 'store', provider: 'default', id: 'XMPP_TEST_PASSWORD' },
+    '${XMPP_TEST_PASSWORD}',
+  ])('keeps an existing reference without resolving or replacing it %#', async (password) => {
+    const cfg = {
+      channels: { xmpp: { accounts: { default: { jid: 'bot@example.com', password } } } },
+    } as OpenClawConfig;
+    const original = structuredClone(cfg);
+    const text = vi.fn(async ({ message }: { message: string }) => {
+      if (message.startsWith('XMPP JID')) return 'bot@example.com';
+      if (message.startsWith('TCP connection host')) return '';
+      if (message.startsWith('Owner JIDs')) return 'user@example.com';
+      throw new Error('Unexpected setup prompt');
+    });
+    const prompter = {
+      text,
+      note: vi.fn(),
+      confirm: vi.fn(async ({ message }: { message: string }) =>
+        message.startsWith('Keep the configured')
+      ),
+      select: vi.fn(),
+    } as unknown as WizardPrompter;
+    const result = await xmppOnboardingAdapter.configure({
+      cfg,
+      prompter,
+      runtime: {} as RuntimeEnv,
+      accountOverrides: {},
+      shouldPromptAccountIds: false,
+      forceAllowFrom: false,
+    });
+    expect(getXmppConfig(result.cfg).accounts?.default?.password).toEqual(password);
+    expect(cfg).toEqual(original);
+    expect(text).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'XMPP password' }));
+    expect(JSON.stringify(result.cfg)).not.toContain('resolvedValue');
   });
 });

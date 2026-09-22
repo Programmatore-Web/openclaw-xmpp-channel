@@ -69,7 +69,7 @@ an actionable compatibility error. See [runtime policy and upgrade procedure](XM
 | `enabled` | `true` | Enable or disable the account |
 | `name` | none | Optional account display name |
 | `jid` | required | Bot JID, for example `bot@example.com` |
-| `password` | required | XMPP account password |
+| `password` | required | Plaintext, env shorthand, or OpenClaw SecretRef |
 | `server` | JID domain | Physical TCP connection host; it does not replace the logical XMPP domain extracted from `jid` |
 | `port` | `5222` | TCP client port; STARTTLS is required before authentication |
 | `resource` | generated | Unique XMPP resource |
@@ -221,6 +221,27 @@ See [D6 semantics and SDK findings](D6-REVIEW.md) for the current decision and
 }
 ```
 
+### Password secrets
+
+Root `channels.xmpp.password` and `channels.xmpp.accounts.*.password` accept
+plaintext strings, legacy env shorthand (`${XMPP_TEST_PASSWORD}` or
+`$XMPP_TEST_PASSWORD`), and OpenClaw SecretRef objects, for example:
+
+```json
+{
+  "source": "store",
+  "provider": "default",
+  "id": "XMPP_TEST_PASSWORD"
+}
+```
+
+OpenClaw resolves references into its Gateway runtime config before starting an
+account. The source config retains the reference. The plugin does not read secret
+providers or the protected store directly, including during reconnect. An
+unavailable secret prevents the affected account from authenticating. Plaintext
+passwords retain their original bytes, including whitespace. Setup can keep an
+existing password reference without materializing it.
+
 ## Supported extensions
 
 | XEP | Support |
@@ -247,6 +268,11 @@ npm audit --omit=dev --omit=peer
 npm pack --dry-run
 git diff --check
 ```
+
+Local secret runtime characterization (build first):
+`npm run test:secret-runtime -- /path/to/openclaw`. The script supports OpenClaw
+2026.8.2 and 2026.9.5 and uses a disposable packed plugin and a fake XMPP client.
+Use a Node version supported by the selected host (24.16.0 supports both).
 
 ## License
 

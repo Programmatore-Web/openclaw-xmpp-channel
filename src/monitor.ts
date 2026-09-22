@@ -5,6 +5,7 @@
  * Handles connection lifecycle, message routing, and event dispatch.
  */
 
+import { coerceSecretRef } from 'openclaw/plugin-sdk/secret-input';
 import { client, xml } from './xmpp.js';
 import { assertXmppRuntimeCompatible } from './xmpp-runtime-compat.js';
 import type { Element } from '@xmpp/client';
@@ -214,6 +215,16 @@ export function getActiveClient(accountId: string): ReturnType<typeof client> | 
 // MAIN CONNECTION FUNCTION
 // =============================================================================
 
+/** The Gateway owns materialization. Never normalize opaque SASL password bytes. */
+function requireRuntimePassword(value: unknown): string {
+  if (coerceSecretRef(value) || typeof value !== 'string' || value.length === 0) {
+    throw new Error(
+      'XMPP runtime password is unavailable; prepare the OpenClaw secrets runtime snapshot'
+    );
+  }
+  return value;
+}
+
 /**
  * Start XMPP connection for an account
  * Returns a promise that stays pending until the connection is stopped
@@ -223,6 +234,7 @@ export async function startXmppConnection(ctx: GatewayStartContext): Promise<voi
   if (!ctx.account.config.jid || !ctx.account.config.password) {
     throw new Error('XMPP jid and password are required');
   }
+  requireRuntimePassword(ctx.account.config.password);
   const previous = accountLifecycles.get(accountId);
   const stopped = previous?.stop();
   let finish!: () => void;
@@ -328,6 +340,7 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
   if (!config.jid || !config.password) {
     throw new Error('XMPP jid and password are required');
   }
+  requireRuntimePassword(config.password);
   let disposed = false;
   const setStatus: GatewayStartContext['setStatus'] = (patch) => {
     if (!disposed && accountLifecycles.get(accountId) === owner) {
@@ -374,7 +387,10 @@ async function startClient(ctx: GatewayStartContext, owner: AccountLifecycle): P
 
       const mechanism = selectPasswordSaslMechanism(mechanisms);
 
-      await authenticate({ username, password: config.password }, mechanism);
+      await authenticate(
+        { username, password: requireRuntimePassword(config.password) },
+        mechanism
+      );
     },
     resource: sessionResource,
   });

@@ -253,7 +253,7 @@ describe('account and directory name fallbacks', () => {
       accountId: 'work',
       name: accountName,
       enabled: true,
-      configured: true,
+      configured: false,
       dmPolicy: 'open',
       allowFrom: ['user@example.com'],
     });
@@ -297,6 +297,11 @@ describe('channel pairing and status Promise contracts', () => {
 
   it.each([
     { name: 'unconfigured', config: {}, expected: { ok: false, error: 'Not configured' } },
+    {
+      name: 'missing password',
+      config: { channels: { xmpp: { jid: 'bot@example.com' } } },
+      expected: { ok: false, error: 'Not configured' },
+    },
     { name: 'configured', config: cfg, expected: { ok: true, jid: 'bot@example.com' } },
   ])('resolves the $name probe from configuration alone', async ({ config, expected }) => {
     const result = xmppPlugin.status!.probeAccount!({

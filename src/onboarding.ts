@@ -1,9 +1,15 @@
+import { coerceSecretRef } from 'openclaw/plugin-sdk/secret-input';
 import type { OpenClawConfig, WizardPrompter } from 'openclaw/plugin-sdk/core';
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from 'openclaw/plugin-sdk/core';
 import { formatDocsLink, promptAccountId } from 'openclaw/plugin-sdk/setup';
 import type { ChannelSetupWizardAdapter } from 'openclaw/plugin-sdk/setup';
 import type { DmPolicy } from './types.js';
-import { listXmppAccountIds, resolveDefaultXmppAccountId, resolveXmppAccount } from './accounts.js';
+import {
+  hasXmppCredentials,
+  listXmppAccountIds,
+  resolveDefaultXmppAccountId,
+  resolveXmppAccount,
+} from './accounts.js';
 import { bareJid } from './config-schema.js';
 
 const channel = 'xmpp' as const;
@@ -118,16 +124,25 @@ async function promptXmppCredentials(
     },
   });
 
-  const password = await prompter.text({
-    message: 'XMPP password',
-    sensitive: true,
-    validate: (value) => {
-      if (String(value ?? '').length === 0) {
-        return 'Password is required';
-      }
-      return undefined;
-    },
-  });
+  // Keep source references opaque; setup must never persist a runtime resolved value.
+  const keepReference =
+    coerceSecretRef(existing.config.password) !== null &&
+    (await prompter.confirm({
+      message: 'Keep the configured XMPP password reference?',
+      initialValue: true,
+    }));
+  const password = keepReference
+    ? existing.config.password
+    : await prompter.text({
+        message: 'XMPP password',
+        sensitive: true,
+        validate: (value) => {
+          if (String(value ?? '').length === 0) {
+            return 'Password is required';
+          }
+          return undefined;
+        },
+      });
 
   const server = await prompter.text({
     message: 'TCP connection host (leave empty to use the JID domain)',
@@ -256,7 +271,7 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
       const defaultAccountId = resolveDefaultXmppAccountId(cfg);
       const accountId = overrideId ? normalizeAccountId(overrideId) : defaultAccountId;
       const account = resolveXmppAccount({ cfg, accountId });
-      const configured = Boolean(account?.config?.jid && account?.config?.password);
+      const configured = hasXmppCredentials(account.config);
       const accountLabel = accountId === DEFAULT_ACCOUNT_ID ? 'default' : accountId;
 
       resolve({

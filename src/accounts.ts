@@ -1,3 +1,4 @@
+import { hasConfiguredSecretInput } from 'openclaw/plugin-sdk/secret-input';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from 'openclaw/plugin-sdk/core';
 import type { XmppConfig, ResolvedXmppAccount } from './types.js';
@@ -141,6 +142,16 @@ export function listEnabledXmppAccounts(cfg: OpenClawConfig): ResolvedXmppAccoun
 export function isXmppConfigured(cfg: OpenClawConfig): boolean {
   return listXmppAccountIds(cfg).some((id) => {
     const account = resolveXmppAccount({ cfg, accountId: id });
-    return Boolean(account.config?.jid && account.config?.password);
+    return hasXmppCredentials(account.config);
   });
+}
+
+/** Inspect source or runtime credentials without resolving providers or changing password bytes. */
+export function hasXmppCredentials(config: Partial<XmppConfig>): boolean {
+  return (
+    Boolean(config.jid) &&
+    (typeof config.password === 'string'
+      ? config.password.length > 0
+      : hasConfiguredSecretInput(config.password))
+  );
 }
