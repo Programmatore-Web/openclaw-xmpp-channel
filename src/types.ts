@@ -1,3 +1,4 @@
+import type { SecretInput } from 'openclaw/plugin-sdk/secret-input';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import type { ChannelAccountSnapshot as SdkAccountSnapshot } from 'openclaw/plugin-sdk/channel-contract';
 
@@ -69,7 +70,7 @@ export interface XmppConfig {
   /** Bot JID (e.g., bot@example.com) */
   jid: string;
   /** XMPP account password */
-  password: string;
+  password: SecretInput;
   /** Physical TCP connection host (defaults to the JID domain) */
   server?: string;
   /** XMPP server port (default: 5222) */

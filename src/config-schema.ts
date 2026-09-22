@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { buildSecretInputSchema } from 'openclaw/plugin-sdk/secret-input';
 import { buildChannelConfigSchema } from 'openclaw/plugin-sdk/core';
 import { xmppConfigUiHints } from './config-ui-hints.js';
 
@@ -71,7 +72,7 @@ export const XmppAccountOverrideSchema = z.object({
   jid: z.string().optional().describe('Bot JID (e.g., bot@example.com)'),
 
   /** XMPP account password */
-  password: z.string().optional().describe('XMPP account password'),
+  password: buildSecretInputSchema().optional().describe('XMPP account password'),
 
   /** Physical TCP connection host (defaults to the JID domain) */
   server: z.string().optional().describe('TCP connection host (defaults to the JID domain)'),

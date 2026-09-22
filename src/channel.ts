@@ -18,7 +18,12 @@ import { xmppChannelConfigSchema, bareJid } from './config-schema.js';
 import { startXmppConnection } from './monitor.js';
 import { generateXmppMessageId, sendXmppMessage } from './outbound.js';
 import { xmppOnboardingAdapter } from './onboarding.js';
-import { listXmppAccountIds, resolveDefaultXmppAccountId, resolveXmppAccount } from './accounts.js';
+import {
+  hasXmppCredentials,
+  listXmppAccountIds,
+  resolveDefaultXmppAccountId,
+  resolveXmppAccount,
+} from './accounts.js';
 import { collectXmppStatusIssues } from './status-issues.js';
 import { xmppDirectoryAdapter, xmppResolverAdapter } from './directory.js';
 import { xmppMessageActions } from './actions.js';
@@ -49,8 +54,7 @@ function getConfig(cfg: OpenClawConfig, accountId?: string): XmppConfig {
  * Check if XMPP is configured
  */
 function isConfigured(cfg: OpenClawConfig, accountId?: string): boolean {
-  const config = getConfig(cfg, accountId);
-  return Boolean(config.jid && config.password);
+  return hasXmppCredentials(resolveXmppAccount({ cfg, accountId }).config);
 }
 
 /**
@@ -189,8 +193,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
     isEnabled: (account: ResolvedXmppAccount): boolean => account.enabled,
     disabledReason: (): string => 'disabled',
 
-    isConfigured: (account: ResolvedXmppAccount): boolean =>
-      Boolean(account.config?.jid && account.config?.password),
+    isConfigured: (account: ResolvedXmppAccount): boolean => hasXmppCredentials(account.config),
     unconfiguredReason: (): string => 'not configured',
 
     describeAccount: (account: ResolvedXmppAccount): XmppAccountDescriptor => {
@@ -199,7 +202,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
         accountId: account.accountId,
         name: (name === '' ? undefined : name) ?? 'XMPP',
         enabled: account.enabled,
-        configured: Boolean(account.config?.jid),
+        configured: hasXmppCredentials(account.config),
         dmPolicy: account.config?.dmPolicy,
         allowFrom: account.config?.allowFrom,
       };
@@ -515,7 +518,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
     probeAccount: (params: { account: ResolvedXmppAccount }) =>
       new Promise((resolve) => {
         const { account } = params;
-        if (!account.config?.jid) {
+        if (!hasXmppCredentials(account.config)) {
           resolve({ ok: false, error: 'Not configured' });
           return;
         }
@@ -529,7 +532,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       new Promise<Record<string, unknown>>((resolve) => {
         const { account, snapshot } = params;
         resolve({
-          configured: Boolean(account.config?.jid && account.config?.password),
+          configured: hasXmppCredentials(account.config),
           enabled: account.enabled,
           running: snapshot?.running ?? false,
           connected: snapshot?.connected ?? false,
@@ -550,7 +553,7 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       accountId: account.accountId,
       name: account.config?.name,
       enabled: account.enabled,
-      configured: Boolean(account.config?.jid && account.config?.password),
+      configured: hasXmppCredentials(account.config),
       running: runtime?.running ?? false,
       connected: runtime?.connected ?? false,
       lastStartAt: runtime?.lastStartAt ?? null,
