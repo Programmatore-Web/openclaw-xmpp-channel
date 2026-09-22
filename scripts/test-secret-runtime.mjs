@@ -26,6 +26,7 @@ process.env.OPENCLAW_CONFIG_PATH = join(temporary, 'unused-config.json');
 process.env.OPENCLAW_AUTH_STORE_READONLY = '1';
 delete process.env.XMPP_TEST_PASSWORD;
 delete process.env.XMPP_MISSING_PASSWORD;
+delete process.env.XMPP_LITERAL_VALUE;
 const sentinel = 'test-secret-value-DO-NOT-LOG';
 
 // Private bundle discovery is confined to this characterization, following the
@@ -104,20 +105,15 @@ try {
   const { setXmppRuntime } = await import(pathToFileURL(join(pluginRoot, 'dist/src/runtime.js')));
   setXmppRuntime({ channel: { activity: { record: () => {} } } });
   const rootRef = { source: 'store', provider: 'default', id: 'XMPP_TEST_PASSWORD' };
-  writeStore({
-    scope: { kind: 'team' },
-    name: 'XMPP_TEST_PASSWORD',
-    value: sentinel,
-    kind: 'secret',
-    updatedBy: 'test',
-  });
 
-  for (const [label, password, missing] of [
+  for (const [label, password, missing, storeValue = sentinel] of [
     ['plaintext', '  opaque plaintext  ', false],
     ['env shorthand', '${XMPP_TEST_PASSWORD}', false],
     ['short env shorthand', '$XMPP_TEST_PASSWORD', false],
     ['env ref', { ...rootRef, source: 'env' }, false],
     ['store ref', rootRef, false],
+    ['store literal env template', rootRef, false, '${XMPP_LITERAL_VALUE}'],
+    ['store literal env shorthand', rootRef, false, '$XMPP_LITERAL_VALUE'],
     ['missing store', { ...rootRef, id: 'XMPP_MISSING_PASSWORD' }, true],
     ['missing env', { ...rootRef, source: 'env', id: 'XMPP_MISSING_PASSWORD' }, true],
   ])
@@ -126,6 +122,13 @@ try {
       { timeout: 30_000 },
       async () => {
         clearSecrets();
+        writeStore({
+          scope: { kind: 'team' },
+          name: 'XMPP_TEST_PASSWORD',
+          value: storeValue,
+          kind: 'secret',
+          updatedBy: 'test',
+        });
         const source = {
           plugins: {
             allow: ['xmpp'],
@@ -155,7 +158,7 @@ try {
         });
         assert.deepEqual(source, original);
         assert.deepEqual(snapshot.sourceConfig, original);
-        const expected = label === 'plaintext' ? password : sentinel;
+        const expected = label === 'plaintext' ? password : storeValue;
         if (!missing)
           assert.ok(
             snapshot.config.channels.xmpp.password === expected,
@@ -265,16 +268,17 @@ try {
           const account = xmppPlugin.config.resolveAccount(snapshot.config, 'default');
           const summary = await xmppPlugin.status.buildChannelSummary({ account });
           const status = await xmppPlugin.status.buildAccountSnapshot({ account });
+          const publicOutput = JSON.stringify([
+            output,
+            summary,
+            status,
+            snapshot.warnings,
+            snapshot.degradedOwners,
+            manager.getRuntimeSnapshot(),
+            source,
+          ]);
           assert.ok(
-            !JSON.stringify([
-              output,
-              summary,
-              status,
-              snapshot.warnings,
-              snapshot.degradedOwners,
-              manager.getRuntimeSnapshot(),
-              source,
-            ]).includes(sentinel),
+            ![sentinel, storeValue].some((value) => publicOutput.includes(value)),
             'Secret leaked into public output'
           );
           assert.deepEqual(source, original);

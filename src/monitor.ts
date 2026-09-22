@@ -5,7 +5,6 @@
  * Handles connection lifecycle, message routing, and event dispatch.
  */
 
-import { coerceSecretRef } from 'openclaw/plugin-sdk/secret-input';
 import { client, xml } from './xmpp.js';
 import { assertXmppRuntimeCompatible } from './xmpp-runtime-compat.js';
 import type { Element } from '@xmpp/client';
@@ -217,7 +216,7 @@ export function getActiveClient(accountId: string): ReturnType<typeof client> | 
 
 /** The Gateway owns materialization. Never normalize opaque SASL password bytes. */
 function requireRuntimePassword(value: unknown): string {
-  if (coerceSecretRef(value) || typeof value !== 'string' || value.length === 0) {
+  if (typeof value !== 'string' || value.length === 0) {
     throw new Error(
       'XMPP runtime password is unavailable; prepare the OpenClaw secrets runtime snapshot'
     );

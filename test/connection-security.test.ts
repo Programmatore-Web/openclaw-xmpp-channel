@@ -123,9 +123,10 @@ describe('XMPP runtime secret boundary', () => {
   it.each([
     { source: 'store', provider: 'default', id: 'XMPP_TEST_PASSWORD' },
     { source: 'env', provider: 'default', id: 'XMPP_TEST_PASSWORD' },
-    '${XMPP_TEST_PASSWORD}',
-    '$XMPP_TEST_PASSWORD',
     undefined,
+    null,
+    123,
+    false,
     '',
     { malformed: true },
   ])('fails before client creation for unavailable runtime input %#', async (password) => {
@@ -140,6 +141,26 @@ describe('XMPP runtime secret boundary', () => {
     expect(ctx.setStatus).not.toHaveBeenCalled();
     expect(log.error).not.toHaveBeenCalled();
   });
+
+  it.each(['${XMPP_TEST_PASSWORD}', '$XMPP_TEST_PASSWORD'])(
+    'passes an opaque materialized env-like password unchanged to SASL %#',
+    async (password) => {
+      const ctx = connectionContext();
+      ctx.account.config.password = password;
+      await startXmppConnection(ctx);
+      const options = xmppMocks.client.mock.calls[0][0] as any;
+      let observed: string | undefined;
+      await options.credentials(
+        async (credentials: { password: string }) => {
+          observed = credentials.password;
+        },
+        ['SCRAM-SHA-1', 'PLAIN'],
+        undefined,
+        xmppMocks.clientInstance
+      );
+      expect(observed === password).toBe(true);
+    }
+  );
 
   it('authenticates from a materialized clone without leaking or changing the source', async () => {
     const { collectRuntimeConfigAssignments } = await import('../secret-contract-api.js');
