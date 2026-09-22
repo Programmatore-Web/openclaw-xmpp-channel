@@ -132,7 +132,7 @@ async function promptXmppCredentials(
       initialValue: true,
     }));
   const password = keepReference
-    ? existing.config.password
+    ? undefined
     : await prompter.text({
         message: 'XMPP password',
         sensitive: true,
@@ -152,7 +152,8 @@ async function promptXmppCredentials(
 
   const updates: Record<string, unknown> = {
     jid: jid.trim(),
-    password,
+    // Omit kept references so absent account passwords continue inheriting root.
+    ...(keepReference ? {} : { password }),
   };
 
   if (server?.trim()) {

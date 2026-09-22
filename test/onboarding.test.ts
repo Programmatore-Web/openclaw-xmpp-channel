@@ -403,3 +403,102 @@ describe('XMPP setup retains source password references', () => {
     expect(JSON.stringify(result.cfg)).not.toContain('resolvedValue');
   });
 });
+
+describe.each([
+  {
+    label: 'store',
+    password: { source: 'store', provider: 'default', id: 'XMPP_TEST_PASSWORD' },
+  },
+  { label: 'env shorthand', password: '${XMPP_TEST_PASSWORD}' },
+])('XMPP onboarding password inheritance ($label)', ({ password }) => {
+  async function configure(cfg: OpenClawConfig, accountId: string, keep: boolean) {
+    const text = vi.fn(async ({ message }: { message: string }) => {
+      if (message.startsWith('XMPP JID')) return 'bot@example.com';
+      if (message === 'XMPP password') return '  test-secret-value  ';
+      if (message.startsWith('TCP connection host')) return '';
+      if (message.startsWith('Owner JIDs')) return 'user@example.com';
+      throw new Error('Unexpected setup prompt');
+    });
+    const prompter = {
+      text,
+      note: vi.fn(),
+      confirm: vi.fn(
+        async ({ message }: { message: string }) =>
+          message === 'Keep the configured XMPP password reference?' && keep
+      ),
+      select: vi.fn(),
+    } as unknown as WizardPrompter;
+    const result = await xmppOnboardingAdapter.configure({
+      cfg,
+      prompter,
+      runtime: {} as RuntimeEnv,
+      accountOverrides: { xmpp: accountId },
+      shouldPromptAccountIds: false,
+      forceAllowFrom: false,
+    });
+    return { cfg: result.cfg, text };
+  }
+
+  it.each([
+    { name: 'named inherited', accountId: 'secondary', nested: true, inherited: true },
+    { name: 'nested default inherited', accountId: 'default', nested: true, inherited: true },
+    { name: 'named explicit', accountId: 'secondary', nested: true, inherited: false },
+    { name: 'root explicit', accountId: 'default', nested: false, inherited: false },
+  ])('keeps $name password ownership unchanged', async ({ accountId, nested, inherited }) => {
+    const cfg = {
+      channels: {
+        xmpp: nested
+          ? {
+              password: inherited ? password : 'test-root-password',
+              accounts: {
+                [accountId]: { jid: 'bot@example.com', ...(inherited ? {} : { password }) },
+              },
+            }
+          : { jid: 'bot@example.com', password },
+      },
+    } as OpenClawConfig;
+    const original = structuredClone(cfg);
+
+    const result = await configure(cfg, accountId, true);
+    const updated = getXmppConfig(result.cfg);
+    const selected = nested ? updated.accounts?.[accountId] : updated;
+
+    expect(selected).toBeDefined();
+    if (inherited) {
+      expect(selected).not.toHaveProperty('password');
+    } else {
+      expect(selected?.password).toEqual(password);
+    }
+    expect(resolveXmppAccount({ cfg: result.cfg, accountId }).config.password).toEqual(password);
+    expect(updated.password).toEqual(getXmppConfig(original).password);
+    expect(cfg).toEqual(original);
+    expect(result.text).not.toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'XMPP password' })
+    );
+  });
+
+  it.each(['secondary', 'default'])(
+    'writes a new plaintext password only when keep is declined for %s',
+    async (accountId) => {
+      const cfg = {
+        channels: {
+          xmpp: { password, accounts: { [accountId]: { jid: 'bot@example.com' } } },
+        },
+      } as OpenClawConfig;
+      const original = structuredClone(cfg);
+
+      const result = await configure(cfg, accountId, false);
+      const updated = getXmppConfig(result.cfg);
+
+      expect(updated.accounts?.[accountId]?.password).toBe('  test-secret-value  ');
+      expect(updated.password).toEqual(password);
+      expect(resolveXmppAccount({ cfg: result.cfg, accountId }).config.password).toBe(
+        '  test-secret-value  '
+      );
+      expect(result.text).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'XMPP password', sensitive: true })
+      );
+      expect(cfg).toEqual(original);
+    }
+  );
+});
