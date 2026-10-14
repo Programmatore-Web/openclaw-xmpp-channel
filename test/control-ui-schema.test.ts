@@ -130,6 +130,12 @@ describe('OpenClaw Control UI channel manifest', () => {
       io: 'input',
     }) as JsonSchema;
     const runtimeRootProperties = runtimeJsonSchema.properties ?? {};
+    expect(rootProperties.defaultAccount).toEqual(runtimeRootProperties.defaultAccount);
+    expect(rootProperties.defaultAccount).not.toHaveProperty('default');
+    expect(accountProperties).not.toHaveProperty('defaultAccount');
+    expect(uiHints.defaultAccount.label).toBe('Default Account');
+    expect(uiHints).not.toHaveProperty('accounts.*.defaultAccount');
+    expect(manifest.version).toBe(packageJson.version);
     const runtimeAccountSchema = runtimeRootProperties.accounts?.additionalProperties as JsonSchema;
 
     expect(XmppAccountSchema.shape).toHaveProperty('enabled');

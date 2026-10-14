@@ -201,6 +201,7 @@ See [D6 semantics and SDK findings](D6-REVIEW.md) for the current decision and
 {
   "channels": {
     "xmpp": {
+      "defaultAccount": "primary",
       "dmPolicy": "pairing",
       "groupPolicy": "allowlist",
       "accounts": {
@@ -220,6 +221,36 @@ See [D6 semantics and SDK findings](D6-REVIEW.md) for the current decision and
   }
 }
 ```
+
+`channels.xmpp.defaultAccount` optionally selects an existing account independently
+of the order of `accounts`. It is a channel-level setting and cannot appear inside
+an account override. Use the exact canonical ID: 1–64 lowercase letters, digits,
+underscores or hyphens, starting with a letter or digit; `constructor` and
+`prototype` are reserved. Whitespace and case conversion are not applied.
+
+Selection precedence is an operation's explicit `accountId`, then `defaultAccount`,
+then the existing selection rules. An explicit preference takes precedence over
+`accounts.default`. The literal ID `default` still refers to the root account or
+`accounts.default`; it is never an alias for a named account.
+
+When `defaultAccount` is absent, existing behavior is preserved: the account
+resolver selects the sole account, otherwise the literal `default` if present,
+otherwise the first listed account (or `default` if none exist). Account order,
+IDs, inherited settings and legacy outbound behavior are unchanged.
+
+Malformed or nonexistent preferences are configuration errors, with no silent
+fallback. The manifest validates the field's shape; the runtime schema and resolver
+also verify that the referenced account exists. A disabled, incomplete or
+disconnected account remains selected, but cannot send. There is **no automatic
+failover** to another account. Valid SecretRefs count as configured credentials;
+selection does not resolve or copy secrets. Reassign or remove the preference when
+deleting its account.
+
+This selects an **XMPP account**, not an OpenClaw agent. Existing account/agent
+bindings, inbound session identities, agent ownership, the System Agent and
+sandbox settings are unchanged. No account or connection is created by this field.
+Onboarding respects the preference when no account override is supplied and
+preserves explicit overrides without adding another interactive step.
 
 ### Password secrets
 
@@ -273,6 +304,14 @@ Local secret runtime characterization (build first):
 `npm run test:secret-runtime -- /path/to/openclaw`. The script supports OpenClaw
 2026.8.2 and 2026.9.5 and uses a disposable packed plugin and a fake XMPP client.
 Use a Node version supported by the selected host (24.16.0 supports both).
+
+Default-account SDK characterization (build first):
+`npm run test:default-account-runtime -- /path/to/isolated/openclaw`.
+The harness accepts 2026.8.2 and 2026.9.9 (commit `bcfc888`), uses real SDK schema
+conversion, routing and the channel manager with fake XMPP lifecycles, and checks
+two-account outbound and inbound binding isolation. It creates temporary state;
+it does not use a running Gateway, real credentials or an XMPP server. Install the
+selected host outside this repository to avoid changing the project dependencies.
 
 ## License
 

@@ -3,7 +3,7 @@
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import { xml } from './xmpp.js';
 import type { ChannelMessageActionName } from './types.js';
-import { resolveXmppAccount } from './accounts.js';
+import { getXmppOutboundAccountError, resolveXmppAccount } from './accounts.js';
 import { getActiveClient } from './monitor.js';
 import { bareJid } from './config-schema.js';
 import { getRecentInboundMessageId, getServerMessageId } from './state.js';
@@ -95,6 +95,10 @@ async function handleReaction(params: {
 }) {
   const xmppConfig = params.cfg.channels?.xmpp as Record<string, unknown> | undefined;
   const account = resolveXmppAccount({ cfg: params.cfg, accountId: params.accountId });
+  const error = getXmppOutboundAccountError(params.cfg, account);
+  if (error) {
+    return jsonResult({ ok: false, error });
+  }
   if (!reactionEnabled(xmppConfig, account.accountId)) {
     return jsonResult({ ok: false, error: 'XMPP reactions are disabled' });
   }

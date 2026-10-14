@@ -6,6 +6,7 @@ import type { ChannelSetupWizardAdapter } from 'openclaw/plugin-sdk/setup';
 import type { DmPolicy } from './types.js';
 import {
   hasXmppCredentials,
+  hasExplicitXmppDefaultAccount,
   listXmppAccountIds,
   resolveDefaultXmppAccountId,
   resolveXmppAccount,
@@ -13,6 +14,13 @@ import {
 import { bareJid } from './config-schema.js';
 
 const channel = 'xmpp' as const;
+
+/** Preserve legacy root writes, but honor an explicit channel default when no ID is supplied. */
+function resolveXmppSetupAccountId(cfg: OpenClawConfig, accountId?: string): string {
+  return accountId === undefined && hasExplicitXmppDefaultAccount(cfg)
+    ? resolveDefaultXmppAccountId(cfg)
+    : normalizeAccountId(accountId);
+}
 
 function resolveXmppAccountConfigLayout(
   cfg: OpenClawConfig,
@@ -24,7 +32,7 @@ function resolveXmppAccountConfigLayout(
   useNestedLayout: boolean;
   basePath: string;
 } {
-  const resolvedAccountId = normalizeAccountId(accountId);
+  const resolvedAccountId = resolveXmppSetupAccountId(cfg, accountId);
   const current = (cfg.channels?.xmpp ?? {}) as Record<string, unknown>;
   const accounts = (current.accounts ?? {}) as Record<string, Record<string, unknown>>;
   const nestedAccount = accounts[resolvedAccountId];
@@ -210,7 +218,7 @@ async function promptXmppDmAllowlist(
   prompter: WizardPrompter,
   accountId?: string
 ): Promise<OpenClawConfig> {
-  const resolvedAccountId = normalizeAccountId(accountId);
+  const resolvedAccountId = resolveXmppSetupAccountId(cfg, accountId);
   const existing = resolveXmppAccount({ cfg, accountId: resolvedAccountId }).config.dmAllowlist;
   const allowFromRaw = await prompter.text({
     message: 'Direct-message allowlist JIDs (comma-separated)',
@@ -269,8 +277,9 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
     new Promise((resolve) => {
       const { cfg, accountOverrides } = params;
       const overrideId = accountOverrides?.xmpp?.trim();
-      const defaultAccountId = resolveDefaultXmppAccountId(cfg);
-      const accountId = overrideId ? normalizeAccountId(overrideId) : defaultAccountId;
+      const accountId = overrideId
+        ? normalizeAccountId(overrideId)
+        : resolveDefaultXmppAccountId(cfg);
       const account = resolveXmppAccount({ cfg, accountId });
       const configured = hasXmppCredentials(account.config);
       const accountLabel = accountId === DEFAULT_ACCOUNT_ID ? 'default' : accountId;
@@ -337,8 +346,8 @@ export const xmppOnboardingAdapter: ChannelSetupWizardAdapter = {
     allowFromKey: 'channels.xmpp.dmAllowlist',
     resolveConfigKeys: (cfg, accountId) => resolveXmppDmPolicyConfigKeys(cfg, accountId),
     getCurrent: (cfg, accountId): DmPolicy =>
-      resolveXmppAccount({ cfg, accountId: normalizeAccountId(accountId) }).config.dmPolicy ??
-      'pairing',
+      resolveXmppAccount({ cfg, accountId: resolveXmppSetupAccountId(cfg, accountId) }).config
+        .dmPolicy ?? 'pairing',
     setPolicy: (cfg, policy, accountId) =>
       updateXmppAccountConfig(cfg, accountId, { dmPolicy: policy }),
     promptAllowFrom: async ({ cfg, prompter, accountId }) =>

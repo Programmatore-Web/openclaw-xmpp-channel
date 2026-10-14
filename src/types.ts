@@ -66,7 +66,7 @@ export interface XmppGroupConfig {
 /**
  * XMPP channel configuration
  */
-export interface XmppConfig {
+export interface XmppAccountConfig {
   /** Bot JID (e.g., bot@example.com) */
   jid: string;
   /** XMPP account password */
@@ -106,8 +106,14 @@ export interface XmppConfig {
   groupSettings?: Record<string, XmppGroupConfig>;
   /** Send read receipts for incoming messages (XEP-0333, default true) */
   sendReadReceipts?: boolean;
+}
+
+/** Channel-only account selection; never an override inside accounts. */
+export interface XmppConfig extends XmppAccountConfig {
+  /** Existing canonical account ID to use when an operation omits accountId. */
+  defaultAccount?: string;
   /** Multi-account configuration */
-  accounts?: Record<string, XmppConfig>;
+  accounts?: Record<string, XmppAccountConfig>;
 }
 
 /**

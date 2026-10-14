@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generic Personal Eventing Protocol routing.
 - Automatic acceptance of presence subscriptions and MUC invitations.
 
+## [4.2.0]
+
+### Added
+
+- Optional root-only `channels.xmpp.defaultAccount` selects an existing XMPP
+  account independently of account order, ahead of `accounts.default` and behind
+  an operation's explicit account ID. Configurations without the field keep their
+  existing selection and outbound behavior.
+- Runtime and manifest validation, UI hints, onboarding support and isolated SDK
+  characterization for explicit defaults. Invalid references fail explicitly;
+  disabled, incomplete or disconnected accounts never trigger automatic failover.
+  Account IDs, credentials, connections, agent bindings and inbound sessions are
+  preserved.
+
 ## [4.1.0] - 2026-02-17
 
 ### Changed

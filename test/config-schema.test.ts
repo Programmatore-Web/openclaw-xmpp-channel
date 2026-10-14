@@ -7,6 +7,55 @@ import {
 } from '../src/config-schema.js';
 import { resolveXmppAccount } from '../src/accounts.js';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
+import { buildJsonChannelConfigSchema } from 'openclaw/plugin-sdk/channel-config-schema';
+import manifest from '../openclaw.plugin.json';
+
+describe('defaultAccount schema contract', () => {
+  const json = buildJsonChannelConfigSchema(manifest.channelConfigs.xmpp.schema);
+  const valid = { accounts: { oria: {}, main: {} } };
+  it.each(['oria', 'main'])(
+    'preserves explicit %s through runtime and manifest parsing',
+    (defaultAccount) => {
+      const value = { ...valid, defaultAccount };
+      expect(XmppConfigSchema.parse(value).defaultAccount).toBe(defaultAccount);
+      expect(json.runtime!.safeParse(value).success).toBe(true);
+    }
+  );
+  it.each([
+    '',
+    ' ',
+    ' main',
+    'main\n',
+    'MAIN',
+    'a/b',
+    'constructor',
+    'prototype',
+    '__proto__',
+    'a'.repeat(65),
+    null,
+    42,
+    {},
+    [],
+  ])('rejects malformed %j in both schemas', (defaultAccount) => {
+    const value = { ...valid, defaultAccount };
+    expect(XmppConfigSchema.safeParse(value).success).toBe(false);
+    expect(json.runtime!.safeParse(value).success).toBe(false);
+  });
+  it('validates dynamic existence at runtime, separately from static manifest shape', () => {
+    const value = { ...valid, defaultAccount: 'missing' };
+    expect(json.runtime!.safeParse(value).success).toBe(true);
+    const result = XmppConfigSchema.safeParse(value);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0].path).toEqual(['defaultAccount']);
+  });
+  it('keeps absence distinct and excludes account-level selection', () => {
+    expect(XmppConfigSchema.parse(valid)).not.toHaveProperty('defaultAccount');
+    expect(XmppAccountOverrideSchema.shape).not.toHaveProperty('defaultAccount');
+    const nested = { accounts: { main: { defaultAccount: 'main' } } };
+    expect(XmppConfigSchema.safeParse(nested).success).toBe(false);
+    expect(json.runtime!.safeParse(nested).success).toBe(false);
+  });
+});
 
 describe('operational presence configuration', () => {
   it.each(['auto', 'available', 'unavailable'])('accepts %s and safe optional text', (mode) => {

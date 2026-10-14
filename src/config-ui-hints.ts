@@ -10,6 +10,11 @@ const standardHints = createChannelConfigUiHints({
 
 export const xmppConfigUiHints: Record<string, ChannelConfigUiHint> = {
   ...standardHints,
+  defaultAccount: {
+    label: 'Default Account',
+    help: 'Existing canonical account ID for operations without an account. Overrides accounts.default; omit to keep legacy selection. Unavailable accounts never trigger automatic failover. This selects an XMPP account, not an OpenClaw agent.',
+    placeholder: 'primary',
+  },
   '': {
     label: 'XMPP',
     help: 'Configure the default XMPP account or add named accounts under accounts.',

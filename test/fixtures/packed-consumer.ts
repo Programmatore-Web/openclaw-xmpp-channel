@@ -1,4 +1,13 @@
 import { getActiveClient } from '@openclaw/xmpp';
+import type { XmppConfig } from '@openclaw/xmpp';
+
+const preferred: XmppConfig['defaultAccount'] = 'main';
+const omitted: XmppConfig['defaultAccount'] = undefined;
+// @ts-expect-error defaultAccount is a string ID
+const invalidPreferred: XmppConfig['defaultAccount'] = 42;
+type Account = NonNullable<XmppConfig['accounts']>[string];
+// @ts-expect-error account overrides cannot select a channel default
+type NestedDefault = Account['defaultAccount'];
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 const clientIsAny: IsAny<ReturnType<typeof getActiveClient>> = false;

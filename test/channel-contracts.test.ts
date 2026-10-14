@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveXmppAccount } from '../src/accounts.js';
 import { xmppPlugin } from '../src/channel.js';
 import { getXmppSelf } from '../src/directory.js';
+import { resolveXmppHeartbeatRecipients } from '../src/heartbeat.js';
 import { getActiveClient } from '../src/monitor.js';
 
 vi.mock('../src/monitor.js', () => ({
@@ -22,6 +23,106 @@ const client = { send } as unknown as XmppClient;
 beforeEach(() => {
   vi.mocked(getActiveClient).mockReset();
   send.mockClear();
+});
+
+describe('outbound explicit default account', () => {
+  const accounts = {
+    oria: { ...xmppConfig, jid: 'oria@example.com' },
+    main: { ...xmppConfig, jid: 'main@example.com', groups: ['room@conference.example.com'] },
+    default: { ...xmppConfig, jid: 'nested@example.com' },
+  };
+  const sendText = (xmpp: unknown, accountId?: string | null) =>
+    xmppPlugin.outbound!.sendText!({
+      cfg: { channels: { xmpp } } as OpenClawConfig,
+      to: 'room@conference.example.com',
+      text: 'fixture',
+      accountId,
+    });
+
+  it.each([
+    ['oria', undefined, 'oria'],
+    ['main', undefined, 'main'],
+    ['main', null, 'main'],
+    ['main', 'oria', 'oria'],
+    ['oria', 'main', 'main'],
+    ['main', 'default', 'default'],
+    ['missing', 'oria', 'oria'],
+  ])('uses default %s / operation %s on client %s', async (defaultAccount, accountId, selected) => {
+    const sends = Object.fromEntries(
+      Object.keys(accounts).map((id) => [id, vi.fn().mockResolvedValue(undefined)])
+    );
+    vi.mocked(getActiveClient).mockImplementation(
+      (id) => ({ send: sends[id] }) as unknown as XmppClient
+    );
+    await sendText({ defaultAccount, accounts }, accountId);
+    expect(getActiveClient).toHaveBeenCalledExactlyOnceWith(selected);
+    for (const [id, send] of Object.entries(sends))
+      expect(send).toHaveBeenCalledTimes(id === selected ? 1 : 0);
+    expect(sends[selected!].mock.calls[0][0].attrs.type).toBe(
+      selected === 'main' ? 'groupchat' : 'chat'
+    );
+  });
+
+  it.each([{ enabled: false }, { password: '' }, { jid: '' }])(
+    'rejects unusable selected account %j, including stale clients',
+    async (override) => {
+      vi.mocked(getActiveClient).mockReturnValue(client);
+      for (const accountId of [undefined, 'main']) {
+        await expect(
+          sendText(
+            {
+              defaultAccount: 'main',
+              accounts: { ...accounts, main: { ...accounts.main, ...override } },
+            },
+            accountId
+          )
+        ).rejects.toThrow(/disabled|not configured/);
+      }
+      expect(getActiveClient).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    }
+  );
+
+  it('does not try connected siblings when the default is disconnected', async () => {
+    vi.mocked(getActiveClient).mockImplementation((id) => (id === 'main' ? undefined : client));
+    await expect(sendText({ defaultAccount: 'main', accounts })).rejects.toThrow('not connected');
+    expect(getActiveClient).toHaveBeenCalledExactlyOnceWith('main');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown defaults before looking up any client', async () => {
+    await expect(sendText({ defaultAccount: 'missing', accounts })).rejects.toThrow(
+      'defaultAccount'
+    );
+    expect(getActiveClient).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy sends, including the root-only implicit send path', async () => {
+    vi.mocked(getActiveClient).mockReturnValue(client);
+    await sendText({ ...xmppConfig, accounts });
+    expect(getActiveClient).toHaveBeenLastCalledWith('default');
+    await sendText({ accounts }, 'oria');
+    expect(getActiveClient).toHaveBeenLastCalledWith('oria');
+    await expect(sendText({ accounts })).rejects.toThrow('XMPP not configured');
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the same default for directory, allowFrom and heartbeat readiness', async () => {
+    const cfg = {
+      channels: {
+        xmpp: {
+          defaultAccount: 'main',
+          accounts: { ...accounts, main: { ...accounts.main, allowFrom: ['owner@example.com'] } },
+        },
+      },
+    };
+    vi.mocked(getActiveClient).mockReturnValue(client);
+    expect((await getXmppSelf({ cfg }))?.id).toBe('main@example.com');
+    expect(xmppPlugin.config.resolveAllowFrom!({ cfg })).toEqual(['owner@example.com']);
+    expect(await xmppPlugin.heartbeat!.checkReady!({ cfg })).toEqual({ ok: true, reason: 'ok' });
+    expect(getActiveClient).toHaveBeenLastCalledWith('main');
+    expect(send).not.toHaveBeenCalled();
+  });
 });
 
 describe('outbound payload normalization contract', () => {
@@ -363,6 +464,112 @@ describe('channel pairing and status Promise contracts', () => {
       lastError: null,
     });
   });
+});
+
+describe('heartbeat recipients account selection', () => {
+  const rootOwners = ['root-owner@example.com'];
+  const accounts = {
+    oria: { allowFrom: ['oria-owner@example.com'] },
+    main: { allowFrom: ['*', '', '  ', 'main-owner@example.com', 'main-second@example.com'] },
+    default: { allowFrom: ['default-owner@example.com'] },
+  };
+  const config = (xmpp: unknown) => ({ channels: { xmpp } }) as OpenClawConfig;
+
+  it.each(['oria', 'main', 'default'])('uses only the explicit %s account owners', (id) => {
+    const cfg = config({ defaultAccount: id, allowFrom: rootOwners, accounts });
+    const before = structuredClone(cfg);
+    expect(resolveXmppHeartbeatRecipients(cfg)).toEqual({
+      recipients: [`${id}-owner@example.com`],
+      source: 'allowFrom',
+    });
+    expect(resolveXmppHeartbeatRecipients(cfg, { all: true })).toEqual({
+      recipients:
+        id === 'main'
+          ? ['main-owner@example.com', 'main-second@example.com']
+          : [`${id}-owner@example.com`],
+      source: 'allowFrom-all',
+    });
+    expect(cfg).toEqual(before);
+    expect(getActiveClient).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('inherits root owners when the selected account omits allowFrom', () => {
+    expect(
+      resolveXmppHeartbeatRecipients(
+        config({
+          defaultAccount: 'main',
+          allowFrom: rootOwners,
+          accounts: { ...accounts, main: {} },
+        })
+      )
+    ).toEqual({ recipients: rootOwners, source: 'allowFrom' });
+  });
+
+  it.each([{ allowFrom: [] }, { allowFrom: ['*', '', '  '] }])(
+    'does not fall back from an empty effective allowlist %j',
+    ({ allowFrom }) => {
+      const cfg = config({
+        defaultAccount: 'main',
+        allowFrom: rootOwners,
+        accounts: { ...accounts, main: { enabled: false, allowFrom } },
+      });
+      expect(resolveXmppHeartbeatRecipients(cfg)).toEqual({ recipients: [], source: 'none' });
+      expect(resolveXmppHeartbeatRecipients(cfg, { all: true })).toEqual({
+        recipients: [],
+        source: 'none',
+      });
+    }
+  );
+
+  it.each(['main', 'missing'])('keeps opts.to ahead of defaultAccount=%s', (defaultAccount) => {
+    expect(
+      resolveXmppHeartbeatRecipients(config({ defaultAccount, allowFrom: rootOwners, accounts }), {
+        to: ' explicit@example.com ',
+        all: true,
+      })
+    ).toEqual({ recipients: ['explicit@example.com'], source: 'explicit' });
+  });
+
+  it('ignores an empty opts.to and selects the configured account', () => {
+    expect(
+      resolveXmppHeartbeatRecipients(
+        config({ defaultAccount: 'main', allowFrom: rootOwners, accounts }),
+        { to: '  ' }
+      )
+    ).toEqual({ recipients: ['main-owner@example.com'], source: 'allowFrom' });
+  });
+
+  it.each([{ main: accounts.main }, { default: accounts.default }, accounts])(
+    'preserves root allowFrom without an explicit default: %j',
+    (accounts) => {
+      const cfg = config({
+        allowFrom: ['*', '', ' ', ...rootOwners, 'root-second@example.com'],
+        accounts,
+      });
+      expect(resolveXmppHeartbeatRecipients(cfg)).toEqual({
+        recipients: rootOwners,
+        source: 'allowFrom',
+      });
+      expect(resolveXmppHeartbeatRecipients(cfg, { all: true })).toEqual({
+        recipients: [...rootOwners, 'root-second@example.com'],
+        source: 'allowFrom-all',
+      });
+      expect(resolveXmppHeartbeatRecipients(config({ accounts }))).toEqual({
+        recipients: [],
+        source: 'none',
+      });
+    }
+  );
+
+  it.each(['missing', ''])(
+    'rejects an invalid explicit default %j without falling back',
+    (defaultAccount) => {
+      expect(() =>
+        resolveXmppHeartbeatRecipients(config({ defaultAccount, allowFrom: rootOwners, accounts }))
+      ).toThrow('channels.xmpp.defaultAccount');
+    }
+  );
 });
 
 describe('heartbeat readiness Promise contract', () => {

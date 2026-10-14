@@ -3,6 +3,37 @@ import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from 'openclaw/plugin-sdk/core';
 import type { XmppConfig, ResolvedXmppAccount } from './types.js';
 
+// Canonical SDK IDs only: no coercion, prototype keys or trailing whitespace.
+export const XMPP_DEFAULT_ACCOUNT_ID_PATTERN =
+  /^(?!constructor$|prototype$)(?!.*\s)[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** Shared by runtime schema and resolver; inspection never resolves secrets. */
+export function getXmppDefaultAccountError(root: {
+  defaultAccount?: unknown;
+  jid?: unknown;
+  accounts?: Record<string, unknown>;
+}): string | undefined {
+  const id = root.defaultAccount;
+  if (id === undefined) {
+    return undefined;
+  }
+  if (typeof id !== 'string' || !XMPP_DEFAULT_ACCOUNT_ID_PATTERN.test(id)) {
+    return 'channels.xmpp.defaultAccount must be a canonical account ID (1-64 lowercase letters, digits, underscores or hyphens; start with a letter or digit; no reserved keys)';
+  }
+  const nested = Object.hasOwn(root.accounts ?? {}, id) ? root.accounts?.[id] : undefined;
+  if (
+    !(id === DEFAULT_ACCOUNT_ID && root.jid) &&
+    (!nested || typeof nested !== 'object' || Array.isArray(nested))
+  ) {
+    return `channels.xmpp.defaultAccount references an unconfigured account ID: ${id}`;
+  }
+  return undefined;
+}
+
+export function hasExplicitXmppDefaultAccount(cfg: OpenClawConfig): boolean {
+  return getRootConfig(cfg)?.defaultAccount !== undefined;
+}
+
 /**
  * Get root XMPP config from OpenClaw config
  */
@@ -58,6 +89,14 @@ export function listXmppAccountIds(cfg: OpenClawConfig): string[] {
  * Resolve the default account ID
  */
 export function resolveDefaultXmppAccountId(cfg: OpenClawConfig): string {
+  const root = getRootConfig(cfg);
+  if (root?.defaultAccount !== undefined) {
+    const error = getXmppDefaultAccountError(root);
+    if (error) {
+      throw new Error(error);
+    }
+    return root.defaultAccount;
+  }
   const accountIds = listXmppAccountIds(cfg);
 
   // If there's exactly one account, use it
@@ -154,4 +193,21 @@ export function hasXmppCredentials(config: Partial<XmppConfig>): boolean {
       ? config.password.length > 0
       : hasConfiguredSecretInput(config.password))
   );
+}
+
+/** Opt-in readiness checks; never substitute another account or change legacy sends. */
+export function getXmppOutboundAccountError(
+  cfg: OpenClawConfig,
+  account: ResolvedXmppAccount
+): string | undefined {
+  if (!hasExplicitXmppDefaultAccount(cfg)) {
+    return undefined;
+  }
+  if (!account.enabled) {
+    return `XMPP account ${account.accountId} is disabled`;
+  }
+  if (!hasXmppCredentials(account.config)) {
+    return `XMPP account ${account.accountId} is not configured`;
+  }
+  return undefined;
 }

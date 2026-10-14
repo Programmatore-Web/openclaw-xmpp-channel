@@ -92,6 +92,83 @@ function requireDmPolicyAdapter() {
   return adapter;
 }
 
+describe('onboarding with an explicit channel default', () => {
+  const cfg = {
+    ...rootConfig,
+    channels: { xmpp: { ...getXmppConfig(rootConfig), defaultAccount: 'sibling' } },
+  } as OpenClawConfig;
+  it('uses the selected account for status and all omitted-ID policy helpers', async () => {
+    const before = structuredClone(cfg);
+    expect(
+      (await xmppOnboardingAdapter.getStatus({ cfg, accountOverrides: {} })).statusLines
+    ).toEqual(['XMPP (sibling): configured']);
+    const policy = requireDmPolicyAdapter();
+    expect(policy.getCurrent(cfg)).toBe('disabled');
+    expect(policy.resolveConfigKeys!(cfg)).toEqual({
+      policyKey: 'channels.xmpp.accounts.sibling.dmPolicy',
+      allowFromKey: 'channels.xmpp.accounts.sibling.dmAllowlist',
+    });
+    const changed = policy.setPolicy(cfg, 'allowlist');
+    expect(getXmppConfig(changed).accounts?.sibling.dmPolicy).toBe('allowlist');
+    const prompted = await policy.promptAllowFrom({
+      cfg: changed,
+      prompter: { text: vi.fn().mockResolvedValue('new@example.com') } as unknown as WizardPrompter,
+    });
+    expect(getXmppConfig(prompted).accounts?.sibling.dmAllowlist).toEqual(['new@example.com']);
+    expect(getXmppConfig(prompted).accounts?.work).toEqual(getXmppConfig(cfg).accounts?.work);
+    expect(getXmppConfig(prompted).allowFrom).toEqual(getXmppConfig(cfg).allowFrom);
+    expect(getXmppConfig(prompted).defaultAccount).toBe('sibling');
+    expect(cfg).toEqual(before);
+  });
+  it('lets an explicit override repair an invalid default configuration', async () => {
+    const invalid = { channels: { xmpp: { ...getXmppConfig(cfg), defaultAccount: 'missing' } } };
+    expect(
+      (await xmppOnboardingAdapter.getStatus({ cfg: invalid, accountOverrides: { xmpp: 'work' } }))
+        .statusLines
+    ).toEqual(['XMPP (work): configured']);
+    expect(
+      getXmppConfig(updateXmppAccountConfig(invalid, 'work', { name: 'Updated' })).accounts?.work
+        .name
+    ).toBe('Updated');
+    await expect(
+      xmppOnboardingAdapter.getStatus({ cfg: invalid, accountOverrides: {} })
+    ).rejects.toThrow('defaultAccount');
+  });
+  it.each([undefined, 'work'])(
+    'configures only the selected account (override %s)',
+    async (override) => {
+      const selected = override ?? 'sibling';
+      const prompter = {
+        text: vi.fn(async ({ message, initialValue }) => {
+          if (message.startsWith('XMPP JID')) return initialValue;
+          if (message === 'XMPP password') return 'fixture-password';
+          if (message.startsWith('Owner JIDs')) return 'new-owner@example.com';
+          return '';
+        }),
+        confirm: vi.fn().mockResolvedValue(false),
+        note: vi.fn(),
+        select: vi.fn(),
+      } as unknown as WizardPrompter;
+      const result = await xmppOnboardingAdapter.configure({
+        cfg,
+        prompter,
+        runtime: {} as RuntimeEnv,
+        accountOverrides: override ? { xmpp: override } : {},
+        shouldPromptAccountIds: false,
+        forceAllowFrom: false,
+      });
+      expect(result.accountId).toBe(selected);
+      expect(getXmppConfig(result.cfg).accounts?.[selected].password).toBe('fixture-password');
+      const other = selected === 'work' ? 'sibling' : 'work';
+      expect(getXmppConfig(result.cfg).accounts?.[other]).toEqual(
+        getXmppConfig(cfg).accounts?.[other]
+      );
+      expect(getXmppConfig(result.cfg).defaultAccount).toBe('sibling');
+      expect(getXmppConfig(result.cfg).password).toBe(getXmppConfig(cfg).password);
+    }
+  );
+});
+
 describe('XMPP onboarding status Promise contract', () => {
   it.each([
     {
