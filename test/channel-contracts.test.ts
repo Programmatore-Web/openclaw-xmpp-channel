@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveXmppAccount } from '../src/accounts.js';
 import { xmppPlugin } from '../src/channel.js';
 import { getXmppSelf } from '../src/directory.js';
+import { resolveXmppHeartbeatRecipients } from '../src/heartbeat.js';
 import { getActiveClient } from '../src/monitor.js';
 
 vi.mock('../src/monitor.js', () => ({
@@ -463,6 +464,112 @@ describe('channel pairing and status Promise contracts', () => {
       lastError: null,
     });
   });
+});
+
+describe('heartbeat recipients account selection', () => {
+  const rootOwners = ['root-owner@example.com'];
+  const accounts = {
+    oria: { allowFrom: ['oria-owner@example.com'] },
+    main: { allowFrom: ['*', '', '  ', 'main-owner@example.com', 'main-second@example.com'] },
+    default: { allowFrom: ['default-owner@example.com'] },
+  };
+  const config = (xmpp: unknown) => ({ channels: { xmpp } }) as OpenClawConfig;
+
+  it.each(['oria', 'main', 'default'])('uses only the explicit %s account owners', (id) => {
+    const cfg = config({ defaultAccount: id, allowFrom: rootOwners, accounts });
+    const before = structuredClone(cfg);
+    expect(resolveXmppHeartbeatRecipients(cfg)).toEqual({
+      recipients: [`${id}-owner@example.com`],
+      source: 'allowFrom',
+    });
+    expect(resolveXmppHeartbeatRecipients(cfg, { all: true })).toEqual({
+      recipients:
+        id === 'main'
+          ? ['main-owner@example.com', 'main-second@example.com']
+          : [`${id}-owner@example.com`],
+      source: 'allowFrom-all',
+    });
+    expect(cfg).toEqual(before);
+    expect(getActiveClient).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('inherits root owners when the selected account omits allowFrom', () => {
+    expect(
+      resolveXmppHeartbeatRecipients(
+        config({
+          defaultAccount: 'main',
+          allowFrom: rootOwners,
+          accounts: { ...accounts, main: {} },
+        })
+      )
+    ).toEqual({ recipients: rootOwners, source: 'allowFrom' });
+  });
+
+  it.each([{ allowFrom: [] }, { allowFrom: ['*', '', '  '] }])(
+    'does not fall back from an empty effective allowlist %j',
+    ({ allowFrom }) => {
+      const cfg = config({
+        defaultAccount: 'main',
+        allowFrom: rootOwners,
+        accounts: { ...accounts, main: { enabled: false, allowFrom } },
+      });
+      expect(resolveXmppHeartbeatRecipients(cfg)).toEqual({ recipients: [], source: 'none' });
+      expect(resolveXmppHeartbeatRecipients(cfg, { all: true })).toEqual({
+        recipients: [],
+        source: 'none',
+      });
+    }
+  );
+
+  it.each(['main', 'missing'])('keeps opts.to ahead of defaultAccount=%s', (defaultAccount) => {
+    expect(
+      resolveXmppHeartbeatRecipients(config({ defaultAccount, allowFrom: rootOwners, accounts }), {
+        to: ' explicit@example.com ',
+        all: true,
+      })
+    ).toEqual({ recipients: ['explicit@example.com'], source: 'explicit' });
+  });
+
+  it('ignores an empty opts.to and selects the configured account', () => {
+    expect(
+      resolveXmppHeartbeatRecipients(
+        config({ defaultAccount: 'main', allowFrom: rootOwners, accounts }),
+        { to: '  ' }
+      )
+    ).toEqual({ recipients: ['main-owner@example.com'], source: 'allowFrom' });
+  });
+
+  it.each([{ main: accounts.main }, { default: accounts.default }, accounts])(
+    'preserves root allowFrom without an explicit default: %j',
+    (accounts) => {
+      const cfg = config({
+        allowFrom: ['*', '', ' ', ...rootOwners, 'root-second@example.com'],
+        accounts,
+      });
+      expect(resolveXmppHeartbeatRecipients(cfg)).toEqual({
+        recipients: rootOwners,
+        source: 'allowFrom',
+      });
+      expect(resolveXmppHeartbeatRecipients(cfg, { all: true })).toEqual({
+        recipients: [...rootOwners, 'root-second@example.com'],
+        source: 'allowFrom-all',
+      });
+      expect(resolveXmppHeartbeatRecipients(config({ accounts }))).toEqual({
+        recipients: [],
+        source: 'none',
+      });
+    }
+  );
+
+  it.each(['missing', ''])(
+    'rejects an invalid explicit default %j without falling back',
+    (defaultAccount) => {
+      expect(() =>
+        resolveXmppHeartbeatRecipients(config({ defaultAccount, allowFrom: rootOwners, accounts }))
+      ).toThrow('channels.xmpp.defaultAccount');
+    }
+  );
 });
 
 describe('heartbeat readiness Promise contract', () => {

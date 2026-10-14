@@ -75,6 +75,49 @@ describe('explicit XMPP default account', () => {
     }
   );
 
+  it('selects an enumerated root default even when disabled and missing its password', () => {
+    const cfg = config({
+      defaultAccount: 'default',
+      jid: 'root@example.com',
+      enabled: false,
+      accounts: { main: account('main') },
+    });
+    expect(listXmppAccountIds(cfg)).toEqual(['default', 'main']);
+    expect(resolveDefaultXmppAccountId(cfg)).toBe('default');
+    expect(resolveXmppAccount({ cfg })).toMatchObject({
+      accountId: 'default',
+      enabled: false,
+      config: { jid: 'root@example.com' },
+    });
+    expect(resolveXmppAccount({ cfg }).config.password).toBeUndefined();
+  });
+
+  it('selects an incomplete accounts.default instead of a usable sibling', () => {
+    const cfg = config({
+      defaultAccount: 'default',
+      accounts: { main: account('main'), default: {} },
+    });
+    expect(listXmppAccountIds(cfg)).toEqual(['main', 'default']);
+    expect(resolveDefaultXmppAccountId(cfg)).toBe('default');
+    const selected = resolveXmppAccount({ cfg });
+    expect(selected.accountId).toBe('default');
+    expect(selected.config.jid).toBeUndefined();
+    expect(selected.config.password).toBeUndefined();
+  });
+
+  it.each([{}, { main: account('main') }])(
+    'rejects a non-enumerated root default without creating an account or falling back: %j',
+    (accounts) => {
+      const cfg = config({ defaultAccount: 'default', enabled: false, accounts });
+      const before = structuredClone(cfg);
+      expect(listXmppAccountIds(cfg)).toEqual(Object.keys(accounts));
+      expect(() => resolveDefaultXmppAccountId(cfg)).toThrow('unconfigured account ID: default');
+      expect(() => resolveXmppAccount({ cfg })).toThrow('unconfigured account ID: default');
+      expect(cfg).toEqual(before);
+      expect(listXmppAccountIds(cfg)).not.toContain('default');
+    }
+  );
+
   it.each([
     '',
     ' ',

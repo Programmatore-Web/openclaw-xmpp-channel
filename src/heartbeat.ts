@@ -3,7 +3,11 @@
  */
 
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
-import { hasXmppCredentials, resolveXmppAccount } from './accounts.js';
+import {
+  hasExplicitXmppDefaultAccount,
+  hasXmppCredentials,
+  resolveXmppAccount,
+} from './accounts.js';
 import { getActiveClient } from './monitor.js';
 
 /**
@@ -70,8 +74,10 @@ export function resolveXmppHeartbeatRecipients(
     return { recipients: [opts.to.trim()], source: 'explicit' };
   }
 
-  // Get from allowFrom
-  const allowFrom = (xmppConfig?.allowFrom as string[] | undefined) ?? [];
+  // Preserve the root-only lookup unless an explicit default account is configured.
+  const allowFrom = hasExplicitXmppDefaultAccount(cfg)
+    ? (resolveXmppAccount({ cfg }).config.allowFrom ?? [])
+    : ((xmppConfig?.allowFrom as string[] | undefined) ?? []);
   const filtered = allowFrom.filter((entry) => entry !== '*' && entry.trim());
 
   if (filtered.length === 0) {
