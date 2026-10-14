@@ -4,12 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { xmppMessageActions } from '../src/actions.js';
 import * as state from '../src/state.js';
 
-const { send } = vi.hoisted(() => ({
+const { send, getActiveClient } = vi.hoisted(() => ({
   send: vi.fn<(stanza: Element) => Promise<void>>(),
+  getActiveClient: vi.fn(),
 }));
 
 vi.mock('../src/monitor.js', () => ({
-  getActiveClient: () => ({ send }),
+  getActiveClient,
 }));
 
 const accountId = 'actions-test';
@@ -58,6 +59,60 @@ beforeEach(() => {
   state.cleanupAccountState(accountId);
   send.mockReset();
   send.mockResolvedValue(undefined);
+  getActiveClient.mockReset().mockReturnValue({ send });
+});
+
+describe('reactions with an explicit channel default', () => {
+  const accounts = {
+    oria: { jid: 'oria@example.com', password: 'fixture', actions: { reactions: true } },
+    main: { jid: 'main@example.com', password: 'fixture', actions: { reactions: true } },
+  };
+  const invoke = (xmpp: unknown, accountId?: string) =>
+    xmppMessageActions.handleAction({
+      action: 'react',
+      cfg: { channels: { xmpp } } as OpenClawConfig,
+      accountId,
+      params: { chatJid: target, messageId: 'fixture-id', emoji: '👍' },
+    });
+  it.each([
+    ['oria', undefined, 'oria'],
+    ['main', undefined, 'main'],
+    ['main', 'oria', 'oria'],
+  ])('selects %s with override %s', async (defaultAccount, accountId, selected) => {
+    const otherSend = vi.fn();
+    getActiveClient.mockImplementation((id) => ({ send: id === selected ? send : otherSend }));
+    expect((await invoke({ defaultAccount, accounts }, accountId)).details).toMatchObject({
+      ok: true,
+    });
+    expect(getActiveClient).toHaveBeenCalledExactlyOnceWith(selected);
+    expect(send).toHaveBeenCalledOnce();
+    expect(otherSend).not.toHaveBeenCalled();
+  });
+  it.each([{ enabled: false }, { password: '' }, { jid: '' }])(
+    'blocks unavailable default %j before accessing a client',
+    async (override) => {
+      const result = await invoke({
+        defaultAccount: 'main',
+        accounts: { ...accounts, main: { ...accounts.main, ...override } },
+      });
+      expect(result.details).toMatchObject({ ok: false });
+      expect(getActiveClient).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    }
+  );
+  it('never falls back from a disconnected default', async () => {
+    getActiveClient.mockImplementation((id) => (id === 'main' ? undefined : { send }));
+    expect((await invoke({ defaultAccount: 'main', accounts })).details).toEqual({
+      ok: false,
+      error: 'XMPP client not connected',
+    });
+    expect(getActiveClient).toHaveBeenCalledExactlyOnceWith('main');
+    expect(send).not.toHaveBeenCalled();
+  });
+  it('rejects an invalid default without sending', async () => {
+    await expect(invoke({ defaultAccount: 'missing', accounts })).rejects.toThrow('defaultAccount');
+    expect(send).not.toHaveBeenCalled();
+  });
 });
 
 afterEach(() => {

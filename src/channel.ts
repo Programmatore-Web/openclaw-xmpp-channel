@@ -20,6 +20,8 @@ import { generateXmppMessageId, sendXmppMessage } from './outbound.js';
 import { xmppOnboardingAdapter } from './onboarding.js';
 import {
   hasXmppCredentials,
+  hasExplicitXmppDefaultAccount,
+  getXmppOutboundAccountError,
   listXmppAccountIds,
   resolveDefaultXmppAccountId,
   resolveXmppAccount,
@@ -475,13 +477,21 @@ export const xmppPlugin: ChannelPlugin<ResolvedXmppAccount> = {
       accountId?: string | null;
       log?: unknown;
     }) => {
-      const config = getConfig(cfg, accountId ?? undefined);
+      // Keep the legacy send path intact unless the channel opts into selection.
+      const account = hasExplicitXmppDefaultAccount(cfg)
+        ? resolveXmppAccount({ cfg, accountId })
+        : undefined;
+      const error = account && getXmppOutboundAccountError(cfg, account);
+      if (error) {
+        throw new Error(error);
+      }
+      const config = account?.config ?? getConfig(cfg, accountId ?? undefined);
       if (!config.jid) {
         throw new Error('XMPP not configured');
       }
       const result = await sendXmppMessage(config, to, text, {
         log,
-        accountId: accountId ?? undefined,
+        accountId: account?.accountId ?? accountId ?? undefined,
       });
       if (!result.ok) {
         throw new Error(result.error ?? 'Failed to send XMPP message');

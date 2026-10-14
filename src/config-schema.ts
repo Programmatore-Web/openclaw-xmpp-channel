@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { buildSecretInputSchema } from 'openclaw/plugin-sdk/secret-input';
 import { buildChannelConfigSchema } from 'openclaw/plugin-sdk/core';
 import { xmppConfigUiHints } from './config-ui-hints.js';
+import { getXmppDefaultAccountError, XMPP_DEFAULT_ACCOUNT_ID_PATTERN } from './accounts.js';
 
 /**
  * XMPP action configuration schema
@@ -61,7 +62,7 @@ export const XmppGroupConfigSchema = z.object({
  * Named XMPP account override schema. Missing fields inherit from the root
  * account configuration, so this schema must not materialize root defaults.
  */
-export const XmppAccountOverrideSchema = z.object({
+export const XmppAccountOverrideSchema = z.strictObject({
   /** Whether this account is enabled */
   enabled: z.boolean().optional().describe('Enable this XMPP account'),
 
@@ -173,8 +174,18 @@ export const XmppAccountSchema = XmppAccountOverrideSchema.extend({
  * XMPP configuration schema using Zod
  */
 export const XmppConfigSchema = XmppAccountSchema.extend({
+  defaultAccount: z
+    .string()
+    .regex(XMPP_DEFAULT_ACCOUNT_ID_PATTERN)
+    .optional()
+    .describe('Existing canonical XMPP account ID used when an operation omits accountId'),
   /** Multi-account configuration */
   accounts: z.record(z.string(), XmppAccountOverrideSchema).optional(),
+}).superRefine((value, ctx) => {
+  const error = getXmppDefaultAccountError(value);
+  if (error) {
+    ctx.addIssue({ code: 'custom', path: ['defaultAccount'], message: error });
+  }
 });
 
 export type XmppConfigSchemaType = z.infer<typeof XmppConfigSchema>;

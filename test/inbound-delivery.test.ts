@@ -236,6 +236,76 @@ describe.each(['message', 'reaction'] as const)('inbound %s sender name fallback
   );
 });
 
+describe('explicit default does not replace inbound account identity', () => {
+  it.each(['oria', 'main'])(
+    'preserves both inbound sessions with default %s',
+    async (defaultAccount) => {
+      const named = Object.fromEntries(
+        ['oria', 'main'].map((id) => [id, { ...config, jid: `${id}@example.com` }])
+      );
+      const multi = {
+        channels: { xmpp: { defaultAccount, accounts: named } },
+        bindings: ['oria', 'main'].map((id) => ({
+          agentId: id,
+          match: { channel: 'xmpp', accountId: id },
+        })),
+      } as OpenClawConfig;
+      const before = structuredClone(multi);
+      const route = vi.fn(({ accountId: id }) => ({
+        agentId: id,
+        accountId: id,
+        sessionKey: `agent:${id}:xmpp:${id}`,
+        mainSessionKey: `agent:${id}:main`,
+      }));
+      const record = vi.fn().mockResolvedValue(undefined);
+      const dispatch = vi.fn().mockResolvedValue({ queuedFinal: false });
+      setXmppRuntime({
+        channel: {
+          routing: { resolveAgentRoute: route },
+          session: {
+            resolveStorePath: (_store, { agentId }) => `${agentId}-fixture`,
+            recordInboundSession: record,
+          },
+          reply: {
+            finalizeInboundContext: (ctx) => ctx,
+            dispatchReplyWithBufferedBlockDispatcher: dispatch,
+          },
+        },
+      } as unknown as PluginRuntime);
+      try {
+        for (const id of ['oria', 'main'])
+          activeClients.set(id, {
+            send: vi.fn().mockResolvedValue(undefined),
+            stop: vi.fn().mockResolvedValue(undefined),
+          } as unknown as XmppClient);
+        const clients = new Map(activeClients);
+        for (const id of ['oria', 'main']) {
+          await handleInboundMessage({ ...message, to: `${id}@example.com` }, multi, id, named[id]);
+          expect(route).toHaveBeenLastCalledWith(
+            expect.objectContaining({ accountId: id, channel: 'xmpp' })
+          );
+          expect(record).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+              storePath: `${id}-fixture`,
+              sessionKey: `agent:${id}:xmpp:${id}`,
+              updateLastRoute: expect.objectContaining({ accountId: id }),
+            })
+          );
+          expect(dispatch).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+              ctx: expect.objectContaining({ AccountId: id, SessionKey: `agent:${id}:xmpp:${id}` }),
+            })
+          );
+        }
+        expect(activeClients).toEqual(clients);
+        expect(multi).toEqual(before);
+      } finally {
+        for (const id of ['oria', 'main']) cleanupAccountState(id);
+      }
+    }
+  );
+});
+
 describe('debounced reply text fallbacks', () => {
   it.each([
     {

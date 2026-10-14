@@ -2,7 +2,7 @@
   "id": "xmpp",
   "name": "XMPP Channel",
   "description": "Minimal text-only XMPP/Jabber channel plugin for OpenClaw",
-  "version": "4.1.2",
+  "version": "4.2.0",
   "channels": [
     "xmpp"
   ],
@@ -656,6 +656,11 @@
               "type": "string"
             },
             "description": "Additional trusted presence viewers; * explicitly permits public presence access"
+          },
+          "defaultAccount": {
+            "type": "string",
+            "pattern": "^(?!constructor$|prototype$)(?!.*\\s)[a-z0-9][a-z0-9_-]{0,63}$",
+            "description": "Existing canonical XMPP account ID used when an operation omits accountId"
           }
         }
       },
@@ -928,6 +933,11 @@
           "label": "Presence Viewers",
           "help": "Additional trusted bare JIDs. Only an explicit * here makes presence public.",
           "placeholder": "alice@example.com"
+        },
+        "defaultAccount": {
+          "label": "Default Account",
+          "help": "Existing canonical account ID for operations without an account. Overrides accounts.default; omit to keep legacy selection. Unavailable accounts never trigger automatic failover. This selects an XMPP account, not an OpenClaw agent.",
+          "placeholder": "primary"
         }
       }
     }

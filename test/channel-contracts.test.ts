@@ -24,6 +24,106 @@ beforeEach(() => {
   send.mockClear();
 });
 
+describe('outbound explicit default account', () => {
+  const accounts = {
+    oria: { ...xmppConfig, jid: 'oria@example.com' },
+    main: { ...xmppConfig, jid: 'main@example.com', groups: ['room@conference.example.com'] },
+    default: { ...xmppConfig, jid: 'nested@example.com' },
+  };
+  const sendText = (xmpp: unknown, accountId?: string | null) =>
+    xmppPlugin.outbound!.sendText!({
+      cfg: { channels: { xmpp } } as OpenClawConfig,
+      to: 'room@conference.example.com',
+      text: 'fixture',
+      accountId,
+    });
+
+  it.each([
+    ['oria', undefined, 'oria'],
+    ['main', undefined, 'main'],
+    ['main', null, 'main'],
+    ['main', 'oria', 'oria'],
+    ['oria', 'main', 'main'],
+    ['main', 'default', 'default'],
+    ['missing', 'oria', 'oria'],
+  ])('uses default %s / operation %s on client %s', async (defaultAccount, accountId, selected) => {
+    const sends = Object.fromEntries(
+      Object.keys(accounts).map((id) => [id, vi.fn().mockResolvedValue(undefined)])
+    );
+    vi.mocked(getActiveClient).mockImplementation(
+      (id) => ({ send: sends[id] }) as unknown as XmppClient
+    );
+    await sendText({ defaultAccount, accounts }, accountId);
+    expect(getActiveClient).toHaveBeenCalledExactlyOnceWith(selected);
+    for (const [id, send] of Object.entries(sends))
+      expect(send).toHaveBeenCalledTimes(id === selected ? 1 : 0);
+    expect(sends[selected!].mock.calls[0][0].attrs.type).toBe(
+      selected === 'main' ? 'groupchat' : 'chat'
+    );
+  });
+
+  it.each([{ enabled: false }, { password: '' }, { jid: '' }])(
+    'rejects unusable selected account %j, including stale clients',
+    async (override) => {
+      vi.mocked(getActiveClient).mockReturnValue(client);
+      for (const accountId of [undefined, 'main']) {
+        await expect(
+          sendText(
+            {
+              defaultAccount: 'main',
+              accounts: { ...accounts, main: { ...accounts.main, ...override } },
+            },
+            accountId
+          )
+        ).rejects.toThrow(/disabled|not configured/);
+      }
+      expect(getActiveClient).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    }
+  );
+
+  it('does not try connected siblings when the default is disconnected', async () => {
+    vi.mocked(getActiveClient).mockImplementation((id) => (id === 'main' ? undefined : client));
+    await expect(sendText({ defaultAccount: 'main', accounts })).rejects.toThrow('not connected');
+    expect(getActiveClient).toHaveBeenCalledExactlyOnceWith('main');
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown defaults before looking up any client', async () => {
+    await expect(sendText({ defaultAccount: 'missing', accounts })).rejects.toThrow(
+      'defaultAccount'
+    );
+    expect(getActiveClient).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy sends, including the root-only implicit send path', async () => {
+    vi.mocked(getActiveClient).mockReturnValue(client);
+    await sendText({ ...xmppConfig, accounts });
+    expect(getActiveClient).toHaveBeenLastCalledWith('default');
+    await sendText({ accounts }, 'oria');
+    expect(getActiveClient).toHaveBeenLastCalledWith('oria');
+    await expect(sendText({ accounts })).rejects.toThrow('XMPP not configured');
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the same default for directory, allowFrom and heartbeat readiness', async () => {
+    const cfg = {
+      channels: {
+        xmpp: {
+          defaultAccount: 'main',
+          accounts: { ...accounts, main: { ...accounts.main, allowFrom: ['owner@example.com'] } },
+        },
+      },
+    };
+    vi.mocked(getActiveClient).mockReturnValue(client);
+    expect((await getXmppSelf({ cfg }))?.id).toBe('main@example.com');
+    expect(xmppPlugin.config.resolveAllowFrom!({ cfg })).toEqual(['owner@example.com']);
+    expect(await xmppPlugin.heartbeat!.checkReady!({ cfg })).toEqual({ ok: true, reason: 'ok' });
+    expect(getActiveClient).toHaveBeenLastCalledWith('main');
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
 describe('outbound payload normalization contract', () => {
   const normalize = xmppPlugin.outbound!.normalizePayload!;
 
