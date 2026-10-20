@@ -9,21 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Restore SDK loading on OpenClaw 2026.10.5 with a synchronous public-SDK
-  run-state adapter. Existing 2026.8.2 and 2026.9.9 paths were also validated;
-  other 2026 releases are not implicitly verified.
-- Align Zod to 4.6.5 and use the public JSON-schema/runtime-validator boundary
-  to preserve configuration validation across the tested host dependency graphs.
-- Update only the locked root `brace-expansion` artifact from 5.0.9 to 5.0.12
-  for its published denial-of-service advisories, without a new override.
 - Cleanly close healthy XMPP streams on deliberate account stop or reload within
   the existing shutdown budget, while preserving XEP-0198 recovery after accidental
   transport loss. Replacement lifecycles wait for bounded transport cleanup.
 
 ### Changed
 
-- Use generic account fixtures and document exact validated hosts, with
-  OpenClaw 2026.10.5 as the priority target.
 - Reduced the current plugin baseline to minimal text-only XMPP functionality.
 - Updated xmpp.js to the version already selected on the main branch.
 - Changed direct-message and group defaults to fail closed.
@@ -34,6 +25,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Media/file upload, local-file access, and remote media fetching.
 - Generic Personal Eventing Protocol routing.
 - Automatic acceptance of presence subscriptions and MUC invitations.
+
+## [4.2.1] - Unreleased
+
+The changes below were already integrated and validated on the 4.2.0 baseline.
+This version bump only updates package version metadata and documentation.
+
+### Fixed
+
+- Restore SDK loading on OpenClaw 2026.10.5 with a synchronous public-SDK
+  run-state adapter. Existing 2026.8.2 and 2026.9.9 paths were also validated;
+  other 2026 releases are not implicitly verified.
+- Align Zod to 4.6.5 and use the public JSON-schema/runtime-validator boundary
+  to preserve configuration validation across the tested host dependency graphs.
+- Update only the locked root `brace-expansion` artifact from 5.0.9 to 5.0.12
+  for its published denial-of-service advisories, without a new override.
+
+### Changed
+
+- Use generic account fixtures and document exact validated hosts, with
+  OpenClaw 2026.10.5 as the priority target.
 
 ## [4.2.0]
 

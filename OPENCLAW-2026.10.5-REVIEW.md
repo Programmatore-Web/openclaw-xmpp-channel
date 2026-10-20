@@ -184,8 +184,10 @@ denied; optional native-probe warnings under that restriction are documented
 below. Do not run an operational setup command or start a Gateway.
 
 The following Bash sequence starts from the repository after a successful build.
-It was extracted verbatim from this report and executed successfully against a
-new consumer; its installed tarball integrity matched the artifact above.
+The original 4.2.0 sequence was executed successfully against a new consumer;
+its installed tarball integrity matched the historical artifact above. The tarball
+path below now comes from npm pack metadata so it follows the package version.
+The results above remain evidence for the 4.2.0 checkpoint.
 Review the two installed host scripts before the lifecycle loop.
 
 ```bash
@@ -204,10 +206,12 @@ fixture_env() {
     XDG_CACHE_HOME="$consumer_dir/.state" \
     npm_config_cache="$validation_dir/npm-cache" "$@"
 }
-fixture_env npm pack --ignore-scripts --pack-destination "$validation_dir/artifact"
+fixture_env npm pack --json --ignore-scripts --pack-destination "$validation_dir/artifact" \
+  > "$validation_dir/pack.json"
+tarball_name="$(fixture_env node -p 'require(process.argv[1])[0].filename' "$validation_dir/pack.json")"
 fixture_env npm install --prefix "$consumer_dir" --ignore-scripts --omit=dev \
   --save-exact openclaw@2026.10.5 \
-  "$validation_dir/artifact/openclaw-xmpp-4.2.0.tgz"
+  "$validation_dir/artifact/$tarball_name"
 host_dir="$consumer_dir/node_modules/openclaw"
 (
   cd "$consumer_dir"

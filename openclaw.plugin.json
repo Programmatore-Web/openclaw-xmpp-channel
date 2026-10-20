@@ -2,7 +2,7 @@
   "id": "xmpp",
   "name": "XMPP Channel",
   "description": "Minimal text-only XMPP/Jabber channel plugin for OpenClaw",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "channels": [
     "xmpp"
   ],

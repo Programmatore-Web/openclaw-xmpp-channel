@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/xmpp",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "description": "Minimal text-only XMPP channel plugin for OpenClaw",
   "type": "module",
   "main": "dist/index.js",

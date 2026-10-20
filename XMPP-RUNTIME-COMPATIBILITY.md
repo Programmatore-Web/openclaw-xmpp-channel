@@ -3,9 +3,10 @@
 The only validated xmpp.js implementation family is **exactly 0.14.0**.
 The plugin depends on characterized internals, not only public APIs. A future
 `0.14.x` release allowed by upstream semver ranges requires deliberate revalidation.
-Package version is `@openclaw/xmpp@4.2.0`. **OpenClaw 2026.10.5 is the priority
-target**; isolated SDK/plugin checks have passed on exact 2026.8.2, 2026.9.9 and
-2026.10.5. Other versions, including 2026.10.1, are not verified by this work.
+Package version is `@openclaw/xmpp@4.2.1`. **OpenClaw 2026.10.5 is the priority
+target**; the 4.2.0 compatibility checkpoint passed isolated SDK/plugin checks on
+exact 2026.8.2, 2026.9.9 and 2026.10.5. Other versions, including 2026.10.1, are not
+verified by this work.
 See [the compatibility report](https://github.com/Programmatore-Web/openclaw-xmpp-channel/blob/main/OPENCLAW-2026.10.5-REVIEW.md) for per-host scope.
 
 Package metadata remains peer `^2026.8.2`, plugin API `>=2026.8.2`, build SDK
