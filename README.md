@@ -29,9 +29,17 @@ npm run build
 
 Register the built plugin using the normal OpenClaw extension configuration.
 
-Supported runtimes: OpenClaw 2026.8.2 or newer within the 2026 release line,
-and the Node.js ranges supported by OpenClaw 2026.8.2: 22.22.3–22.x,
-24.15.0–24.x, or 25.9.0 and newer.
+The priority compatibility target is **OpenClaw 2026.10.5**. Real isolated
+validation covers builds, plugin loading/registration and runtime contracts on
+**2026.8.2, 2026.9.9 and 2026.10.5**; this does not establish compatibility with
+the entire 2026 release line. **2026.10.1 and other versions are not verified**
+by this compatibility work. See the [validation report](https://github.com/Programmatore-Web/openclaw-xmpp-channel/blob/main/OPENCLAW-2026.10.5-REVIEW.md)
+for the scope and date of each check.
+
+Use a Node.js version supported by the selected OpenClaw host. The compatibility
+checks used **Node.js 24.22.0 on Linux**. The repository lockfile still builds
+against SDK **2026.8.2**, as recorded in the package's build metadata; validation
+against a newer host does not change that build provenance.
 
 The validated xmpp.js runtime family is **exactly 0.14.0**. The plugin pins
 `@xmpp/client` and locally verifies the actual upstream component copies before
@@ -294,11 +302,23 @@ existing password reference without materializing it.
 ```bash
 npm ci --ignore-scripts
 npm run build
-npm test -- --run
+npm test -- --run --maxWorkers=1
 npm audit --omit=dev --omit=peer
 npm pack --dry-run
 git diff --check
 ```
+
+The complete compatibility suites passed with one worker. Earlier concurrent
+runs hit the strict transport child's wall-clock deadline in the validation
+container; no test timeout or assertion was relaxed. Default worker concurrency
+has not been revalidated on the final checkpoint.
+
+The real packed-plugin probe for the priority host is:
+`node scripts/test-openclaw-2026-10-5-runtime.mjs /tmp/<consumer>`.
+It requires exact OpenClaw 2026.10.5 and the locally built tarball installed in a
+disposable consumer, with the host's package lifecycle prepared. It checks native
+synchronous/ESM loading and real SDK registration without starting a Gateway or
+connecting to XMPP. Preparation and isolation details are in the validation report.
 
 Local secret runtime characterization (build first):
 `npm run test:secret-runtime -- /path/to/openclaw`. The script supports OpenClaw

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { buildSecretInputSchema } from 'openclaw/plugin-sdk/secret-input';
-import { buildChannelConfigSchema } from 'openclaw/plugin-sdk/core';
+import { buildJsonChannelConfigSchema } from 'openclaw/plugin-sdk/core';
 import { xmppConfigUiHints } from './config-ui-hints.js';
 import { getXmppDefaultAccountError, XMPP_DEFAULT_ACCOUNT_ID_PATTERN } from './accounts.js';
 
@@ -191,13 +191,34 @@ export const XmppConfigSchema = XmppAccountSchema.extend({
 export type XmppConfigSchemaType = z.infer<typeof XmppConfigSchema>;
 
 /**
- * Build channel config schema using OpenClaw SDK helper
+ * Cross the public SDK boundary with JSON and a runtime validator, not Zod
+ * internals: older hosts may resolve a different Zod minor than the plugin.
  */
-export function xmppChannelConfigSchema(): ReturnType<typeof buildChannelConfigSchema> {
-  return buildChannelConfigSchema(XmppConfigSchema, {
-    uiHints: xmppConfigUiHints,
-    jsonSchemaMode: 'input',
-  });
+export function xmppChannelConfigSchema(): ReturnType<typeof buildJsonChannelConfigSchema> {
+  return buildJsonChannelConfigSchema(
+    XmppConfigSchema.toJSONSchema({ target: 'draft-07', io: 'input', unrepresentable: 'any' }),
+    {
+      uiHints: xmppConfigUiHints,
+      runtime: {
+        safeParse(value) {
+          const result = XmppConfigSchema.safeParse(value);
+          if (result.success) {
+            return { success: true, data: result.data };
+          }
+          return {
+            success: false,
+            issues: result.error.issues.map((issue) => ({
+              ...issue,
+              path: issue.path.filter(
+                (segment): segment is string | number =>
+                  typeof segment === 'string' || typeof segment === 'number'
+              ),
+            })),
+          };
+        },
+      },
+    }
+  );
 }
 
 /**

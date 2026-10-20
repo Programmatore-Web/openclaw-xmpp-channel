@@ -66,8 +66,8 @@ try {
       xmppPlugin.configSchema.schema.properties.defaultAccount,
       cold.schema.properties.defaultAccount
     );
-    for (const defaultAccount of ['oria', 'main']) {
-      const value = { defaultAccount, accounts: { oria: {}, main: {} } };
+    for (const defaultAccount of ['secondary', 'main']) {
+      const value = { defaultAccount, accounts: { secondary: {}, main: {} } };
       assert.equal(cold.runtime.safeParse(value).success, true);
       assert.equal(xmppPlugin.configSchema.runtime.safeParse(value).success, true);
     }
@@ -94,13 +94,13 @@ try {
   const createRegistry = await hostExport('createEmptyPluginRegistry');
   // 2026.8.2 reads the active registry; 2026.9.9 accepts the scoped registry getter.
   const setRegistry = await hostExport('setActivePluginRegistry');
-  for (const preferred of ['oria', 'main']) {
+  for (const preferred of ['secondary', 'main']) {
     await test(
       `${version}: ${preferred}, two lifecycles, outbound and actual multiagent bindings`,
       { timeout: 30_000 },
       async () => {
         const accounts = Object.fromEntries(
-          ['oria', 'main'].map((id) => [
+          ['secondary', 'main'].map((id) => [
             id,
             {
               jid: `${id}@example.com`,
@@ -116,9 +116,9 @@ try {
           agents: {
             ownership: 'explicit',
             defaults: { systemAgent: { agentId: 'main' } },
-            list: [{ id: 'oria' }, { id: 'main' }],
+            list: [{ id: 'secondary' }, { id: 'main' }],
           },
-          bindings: ['oria', 'main'].map((id) => ({
+          bindings: ['secondary', 'main'].map((id) => ({
             agentId: id,
             match: { channel: 'xmpp', accountId: id },
           })),
@@ -183,7 +183,7 @@ try {
                 channels: {
                   xmpp: {
                     defaultAccount: preferred,
-                    accounts: { main: accounts.main, oria: accounts.oria },
+                    accounts: { main: accounts.main, secondary: accounts.secondary },
                   },
                 },
               },
@@ -192,11 +192,11 @@ try {
             preferred
           );
           await manager.startChannel('xmpp');
-          assert.deepEqual(started.slice().sort(), ['main', 'oria']);
-          assert.deepEqual([...activeClients.keys()].sort(), ['main', 'oria']);
+          assert.deepEqual(started.slice().sort(), ['main', 'secondary']);
+          assert.deepEqual([...activeClients.keys()].sort(), ['main', 'secondary']);
           await xmppPlugin.outbound.sendText({ cfg, to: 'peer@example.com', text: 'fixture' });
           assert.equal(sent.at(-1).accountId, preferred);
-          const explicit = preferred === 'oria' ? 'main' : 'oria';
+          const explicit = preferred === 'secondary' ? 'main' : 'secondary';
           await xmppPlugin.outbound.sendText({
             cfg,
             accountId: explicit,
@@ -210,7 +210,7 @@ try {
             params: { chatJid: 'peer@example.com', messageId: 'fixture', emoji: '👍' },
           });
           assert.equal(sent.at(-1).accountId, preferred);
-          for (const id of ['oria', 'main']) {
+          for (const id of ['secondary', 'main']) {
             const route = resolveAgentRoute({
               cfg,
               channel: 'xmpp',

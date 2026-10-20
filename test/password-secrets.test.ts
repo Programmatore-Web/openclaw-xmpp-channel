@@ -42,14 +42,14 @@ function collect(source: OpenClawConfig, generic = false) {
 }
 
 describe('XMPP SecretInput configuration', () => {
-  it.each(['oria', 'main'])(
+  it.each(['secondary', 'main'])(
     'preserves inherited and overridden references with default %s',
     (defaultAccount) => {
       const source = {
         password: ref,
         defaultAccount,
         accounts: {
-          oria: { jid: 'oria@example.com' },
+          secondary: { jid: 'secondary@example.com' },
           main: { jid: 'main@example.com', password: other },
         },
       };
@@ -57,7 +57,7 @@ describe('XMPP SecretInput configuration', () => {
       const cfg = config(XmppConfigSchema.parse(source));
       const selected = resolveXmppAccount({ cfg });
       expect(selected.accountId).toBe(defaultAccount);
-      expect(selected.config.password).toEqual(defaultAccount === 'oria' ? ref : other);
+      expect(selected.config.password).toEqual(defaultAccount === 'secondary' ? ref : other);
       expect(hasXmppCredentials(selected.config)).toBe(true);
       expect(source).toEqual(before);
       // Selection cannot change which consumers/paths the secrets contract collects.

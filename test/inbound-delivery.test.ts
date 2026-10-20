@@ -135,54 +135,62 @@ describe('inbound ID producer/consumer invariants', () => {
       expectedContextId: 'server-id',
       expectedRecentId: 'msg_1000',
     },
-  ])('$name', async ({ isGroup, stanzaBy, originId, rawId, expectedContextId, expectedRecentId }) => {
-    vi.setSystemTime(1000);
-    const { dispatch, recordInboundSession } = createDeliveryHarness();
-    const accountConfig: XmppConfig = { ...config, groupPolicy: 'open', groups: [room] };
-    const accountCfg: OpenClawConfig = { channels: { xmpp: accountConfig } };
-    let listener: ((stanza: Element) => void) | undefined;
-    const xmpp = {
-      on: vi.fn((event: string, handler: (stanza: Element) => void) => {
-        if (event === 'stanza') listener = handler;
-      }),
-    } as unknown as XmppClient;
-    const log = { error: vi.fn() };
-    setupMessageHandler(xmpp, accountId, 'bot', accountCfg, accountConfig, log);
-    if (!listener) throw new Error('message listener was not registered');
+  ])(
+    '$name',
+    async ({ isGroup, stanzaBy, originId, rawId, expectedContextId, expectedRecentId }) => {
+      vi.setSystemTime(1000);
+      const { dispatch, recordInboundSession } = createDeliveryHarness();
+      const accountConfig: XmppConfig = { ...config, groupPolicy: 'open', groups: [room] };
+      const accountCfg: OpenClawConfig = { channels: { xmpp: accountConfig } };
+      let listener: ((stanza: Element) => void) | undefined;
+      const xmpp = {
+        on: vi.fn((event: string, handler: (stanza: Element) => void) => {
+          if (event === 'stanza') listener = handler;
+        }),
+      } as unknown as XmppClient;
+      const log = { error: vi.fn() };
+      setupMessageHandler(xmpp, accountId, 'bot', accountCfg, accountConfig, log);
+      if (!listener) throw new Error('message listener was not registered');
 
-    const stanza = xml(
-      'message',
-      {
-        from: isGroup ? `${room}/user` : message.from,
-        to: config.jid,
-        type: isGroup ? 'groupchat' : 'chat',
-        id: rawId ?? 'raw-id',
-      },
-      xml('body', {}, 'hello'),
-      xml('stanza-id', {
-        xmlns: 'urn:xmpp:sid:0',
-        id: 'server-id',
-        by: stanzaBy ?? (isGroup ? room : 'example.com'),
-      }),
-      ...(originId === undefined ? [] : [xml('origin-id', { xmlns: 'urn:xmpp:sid:0', id: originId })])
-    );
+      const stanza = xml(
+        'message',
+        {
+          from: isGroup ? `${room}/user` : message.from,
+          to: config.jid,
+          type: isGroup ? 'groupchat' : 'chat',
+          id: rawId ?? 'raw-id',
+        },
+        xml('body', {}, 'hello'),
+        xml('stanza-id', {
+          xmlns: 'urn:xmpp:sid:0',
+          id: 'server-id',
+          by: stanzaBy ?? (isGroup ? room : 'example.com'),
+        }),
+        ...(originId === undefined
+          ? []
+          : [xml('origin-id', { xmlns: 'urn:xmpp:sid:0', id: originId })])
+      );
 
-    expect(listener(stanza)).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(0);
+      expect(listener(stanza)).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(0);
 
-    expect(log.error).not.toHaveBeenCalled();
-    expect(recordInboundSession).toHaveBeenCalledOnce();
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        ctx: expect.objectContaining({ MessageSid: expectedContextId, messageId: expectedContextId }),
-      })
-    );
-    expect(getRecentInboundMessageId(accountId, isGroup ? room : 'user@example.com')).toBe(
-      expectedRecentId
-    );
-    expect(vi.getTimerCount()).toBe(0);
-  });
+      expect(log.error).not.toHaveBeenCalled();
+      expect(recordInboundSession).toHaveBeenCalledOnce();
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ctx: expect.objectContaining({
+            MessageSid: expectedContextId,
+            messageId: expectedContextId,
+          }),
+        })
+      );
+      expect(getRecentInboundMessageId(accountId, isGroup ? room : 'user@example.com')).toBe(
+        expectedRecentId
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  );
 });
 
 describe.each(['message', 'reaction'] as const)('inbound %s sender name fallbacks', (kind) => {
@@ -237,15 +245,15 @@ describe.each(['message', 'reaction'] as const)('inbound %s sender name fallback
 });
 
 describe('explicit default does not replace inbound account identity', () => {
-  it.each(['oria', 'main'])(
+  it.each(['secondary', 'main'])(
     'preserves both inbound sessions with default %s',
     async (defaultAccount) => {
       const named = Object.fromEntries(
-        ['oria', 'main'].map((id) => [id, { ...config, jid: `${id}@example.com` }])
+        ['secondary', 'main'].map((id) => [id, { ...config, jid: `${id}@example.com` }])
       );
       const multi = {
         channels: { xmpp: { defaultAccount, accounts: named } },
-        bindings: ['oria', 'main'].map((id) => ({
+        bindings: ['secondary', 'main'].map((id) => ({
           agentId: id,
           match: { channel: 'xmpp', accountId: id },
         })),
@@ -273,13 +281,13 @@ describe('explicit default does not replace inbound account identity', () => {
         },
       } as unknown as PluginRuntime);
       try {
-        for (const id of ['oria', 'main'])
+        for (const id of ['secondary', 'main'])
           activeClients.set(id, {
             send: vi.fn().mockResolvedValue(undefined),
             stop: vi.fn().mockResolvedValue(undefined),
           } as unknown as XmppClient);
         const clients = new Map(activeClients);
-        for (const id of ['oria', 'main']) {
+        for (const id of ['secondary', 'main']) {
           await handleInboundMessage({ ...message, to: `${id}@example.com` }, multi, id, named[id]);
           expect(route).toHaveBeenLastCalledWith(
             expect.objectContaining({ accountId: id, channel: 'xmpp' })
@@ -300,7 +308,7 @@ describe('explicit default does not replace inbound account identity', () => {
         expect(activeClients).toEqual(clients);
         expect(multi).toEqual(before);
       } finally {
-        for (const id of ['oria', 'main']) cleanupAccountState(id);
+        for (const id of ['secondary', 'main']) cleanupAccountState(id);
       }
     }
   );

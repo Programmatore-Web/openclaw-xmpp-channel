@@ -27,7 +27,7 @@ beforeEach(() => {
 
 describe('outbound explicit default account', () => {
   const accounts = {
-    oria: { ...xmppConfig, jid: 'oria@example.com' },
+    secondary: { ...xmppConfig, jid: 'secondary@example.com' },
     main: { ...xmppConfig, jid: 'main@example.com', groups: ['room@conference.example.com'] },
     default: { ...xmppConfig, jid: 'nested@example.com' },
   };
@@ -40,13 +40,13 @@ describe('outbound explicit default account', () => {
     });
 
   it.each([
-    ['oria', undefined, 'oria'],
+    ['secondary', undefined, 'secondary'],
     ['main', undefined, 'main'],
     ['main', null, 'main'],
-    ['main', 'oria', 'oria'],
-    ['oria', 'main', 'main'],
+    ['main', 'secondary', 'secondary'],
+    ['secondary', 'main', 'main'],
     ['main', 'default', 'default'],
-    ['missing', 'oria', 'oria'],
+    ['missing', 'secondary', 'secondary'],
   ])('uses default %s / operation %s on client %s', async (defaultAccount, accountId, selected) => {
     const sends = Object.fromEntries(
       Object.keys(accounts).map((id) => [id, vi.fn().mockResolvedValue(undefined)])
@@ -101,8 +101,8 @@ describe('outbound explicit default account', () => {
     vi.mocked(getActiveClient).mockReturnValue(client);
     await sendText({ ...xmppConfig, accounts });
     expect(getActiveClient).toHaveBeenLastCalledWith('default');
-    await sendText({ accounts }, 'oria');
-    expect(getActiveClient).toHaveBeenLastCalledWith('oria');
+    await sendText({ accounts }, 'secondary');
+    expect(getActiveClient).toHaveBeenLastCalledWith('secondary');
     await expect(sendText({ accounts })).rejects.toThrow('XMPP not configured');
     expect(send).toHaveBeenCalledTimes(2);
   });
@@ -469,13 +469,13 @@ describe('channel pairing and status Promise contracts', () => {
 describe('heartbeat recipients account selection', () => {
   const rootOwners = ['root-owner@example.com'];
   const accounts = {
-    oria: { allowFrom: ['oria-owner@example.com'] },
+    secondary: { allowFrom: ['secondary-owner@example.com'] },
     main: { allowFrom: ['*', '', '  ', 'main-owner@example.com', 'main-second@example.com'] },
     default: { allowFrom: ['default-owner@example.com'] },
   };
   const config = (xmpp: unknown) => ({ channels: { xmpp } }) as OpenClawConfig;
 
-  it.each(['oria', 'main', 'default'])('uses only the explicit %s account owners', (id) => {
+  it.each(['secondary', 'main', 'default'])('uses only the explicit %s account owners', (id) => {
     const cfg = config({ defaultAccount: id, allowFrom: rootOwners, accounts });
     const before = structuredClone(cfg);
     expect(resolveXmppHeartbeatRecipients(cfg)).toEqual({

@@ -9,7 +9,7 @@ import { client, xml } from './xmpp.js';
 import { assertXmppRuntimeCompatible } from './xmpp-runtime-compat.js';
 import type { Element } from '@xmpp/client';
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core';
-import { createRunStateMachine } from 'openclaw/plugin-sdk/channel-lifecycle';
+import { createRunStateMachine } from './sdk-run-state.js';
 import type { XmppConfig, GatewayStartContext, XmppInboundMessage, Logger } from './types.js';
 import { resolveConnectHost, extractJidDomain, extractUsername, bareJid } from './config-schema.js';
 import { selectPasswordSaslMechanism } from './sasl.js';

@@ -12,8 +12,8 @@ import manifest from '../openclaw.plugin.json';
 
 describe('defaultAccount schema contract', () => {
   const json = buildJsonChannelConfigSchema(manifest.channelConfigs.xmpp.schema);
-  const valid = { accounts: { oria: {}, main: {} } };
-  it.each(['oria', 'main'])(
+  const valid = { accounts: { secondary: {}, main: {} } };
+  it.each(['secondary', 'main'])(
     'preserves explicit %s through runtime and manifest parsing',
     (defaultAccount) => {
       const value = { ...valid, defaultAccount };

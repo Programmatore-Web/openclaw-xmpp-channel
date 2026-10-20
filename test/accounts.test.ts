@@ -12,10 +12,10 @@ const account = (id: string) => ({ jid: `${id}@example.com`, password: `${id}-fi
 
 describe('explicit XMPP default account', () => {
   for (const ids of [
-    ['oria', 'main'],
-    ['main', 'oria'],
+    ['secondary', 'main'],
+    ['main', 'secondary'],
   ]) {
-    it.each(['oria', 'main'])(`selects %s with order ${ids.join(', ')}`, (defaultAccount) => {
+    it.each(['secondary', 'main'])(`selects %s with order ${ids.join(', ')}`, (defaultAccount) => {
       const cfg = config({
         defaultAccount,
         accounts: Object.fromEntries(ids.map((id) => [id, account(id)])),
@@ -35,9 +35,13 @@ describe('explicit XMPP default account', () => {
     (defaultAccount) => {
       const cfg = config({
         defaultAccount,
-        accounts: { oria: account('oria'), main: account('main'), default: account('default') },
+        accounts: {
+          secondary: account('secondary'),
+          main: account('main'),
+          default: account('default'),
+        },
       });
-      expect(resolveXmppAccount({ cfg, accountId: 'oria' }).accountId).toBe('oria');
+      expect(resolveXmppAccount({ cfg, accountId: 'secondary' }).accountId).toBe('secondary');
       expect(resolveXmppAccount({ cfg, accountId: 'default' }).config.jid).toBe(
         'default@example.com'
       );
@@ -69,7 +73,10 @@ describe('explicit XMPP default account', () => {
   it.each([{}, { enabled: false }, { jid: 'main@example.com' }])(
     'selects an unavailable account without failover: %j',
     (main) => {
-      const cfg = config({ defaultAccount: 'main', accounts: { oria: account('oria'), main } });
+      const cfg = config({
+        defaultAccount: 'main',
+        accounts: { secondary: account('secondary'), main },
+      });
       expect(resolveDefaultXmppAccountId(cfg)).toBe('main');
       expect(resolveXmppAccount({ cfg }).accountId).toBe('main');
     }
@@ -156,10 +163,18 @@ describe('legacy XMPP account selection', () => {
   it.each([
     [{}, 'default', []],
     [{ ...account('root') }, 'default', ['default']],
-    [{ accounts: { oria: account('oria') } }, 'oria', ['oria']],
-    [{ accounts: { oria: {}, main: account('main') } }, 'oria', ['oria', 'main']],
-    [{ accounts: { main: { enabled: false }, oria: account('oria') } }, 'main', ['main', 'oria']],
-    [{ accounts: { oria: {}, default: account('nested') } }, 'default', ['oria', 'default']],
+    [{ accounts: { secondary: account('secondary') } }, 'secondary', ['secondary']],
+    [{ accounts: { secondary: {}, main: account('main') } }, 'secondary', ['secondary', 'main']],
+    [
+      { accounts: { main: { enabled: false }, secondary: account('secondary') } },
+      'main',
+      ['main', 'secondary'],
+    ],
+    [
+      { accounts: { secondary: {}, default: account('nested') } },
+      'default',
+      ['secondary', 'default'],
+    ],
     [{ ...account('root'), accounts: { main: account('main') } }, 'default', ['default', 'main']],
   ])('preserves selection for %j', (root, expected, ids) => {
     const cfg = config(root);

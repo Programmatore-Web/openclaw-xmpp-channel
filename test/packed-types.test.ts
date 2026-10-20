@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -13,6 +14,7 @@ it('ships a reachable, strictly typed public declaration graph', async () => {
   const repository = fileURLToPath(new URL('../', import.meta.url));
   const temporary = mkdtempSync(join(tmpdir(), 'xmpp-packed-types-'));
   const consumer = join(temporary, 'consumer.ts');
+  const factoryContract = join(temporary, 'sdk-factory-contract.ts');
   const packageRoot = join(temporary, 'node_modules', '@openclaw', 'xmpp');
   const env = {
     ...process.env,
@@ -68,6 +70,18 @@ it('ships a reachable, strictly typed public declaration graph', async () => {
       consumer,
       readFileSync(new URL('./fixtures/packed-consumer.ts', import.meta.url))
     );
+    const require = createRequire(join(repository, 'package.json'));
+    const outbound: Record<string, unknown> = require('openclaw/plugin-sdk/channel-outbound');
+    const factorySubpath =
+      'createRunStateMachine' in outbound ? 'channel-outbound' : 'channel-lifecycle';
+    writeFileSync(
+      factoryContract,
+      `import { createRunStateMachine as sdk } from 'openclaw/plugin-sdk/${factorySubpath}';
+import { createRunStateMachine as adapter } from './node_modules/@openclaw/xmpp/dist/src/sdk-run-state.js';
+export const sdkMatchesAdapter: typeof adapter = sdk;
+export const adapterMatchesSdk: typeof sdk = adapter;
+`
+    );
 
     const options: ts.CompilerOptions = {
       strict: true,
@@ -100,7 +114,12 @@ it('ships a reachable, strictly typed public declaration graph', async () => {
       // errors; skipLibCheck stays false and no external types are stubbed.
       const owned = program
         .getSourceFiles()
-        .filter(({ fileName }) => fileName === consumer || fileName.startsWith(packageRoot + sep));
+        .filter(
+          ({ fileName }) =>
+            fileName === consumer ||
+            fileName === factoryContract ||
+            fileName.startsWith(packageRoot + sep)
+        );
       const diagnostics = [
         ...program.getOptionsDiagnostics(),
         ...program.getGlobalDiagnostics(),
@@ -124,6 +143,7 @@ it('ships a reachable, strictly typed public declaration graph', async () => {
     // Also check emitted declarations outside the root's transitive graph.
     check([
       consumer,
+      factoryContract,
       ...pack.files
         .filter(({ path }) => path.endsWith('.d.ts'))
         .map(({ path }) => join(packageRoot, path)),

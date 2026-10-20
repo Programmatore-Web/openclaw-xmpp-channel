@@ -5,7 +5,7 @@ import { handleInboundMessage } from '../src/inbound.js';
 import { trackMucOccupantIdentity } from '../src/muc-identity.js';
 import { setXmppRuntime } from '../src/runtime.js';
 import { cleanupAccountState } from '../src/state.js';
-import { createRunStateMachine } from 'openclaw/plugin-sdk/channel-lifecycle';
+import { createRunStateMachine } from '../src/sdk-run-state.js';
 import type { XmppConfig, XmppInboundMessage } from '../src/types.js';
 
 const accountId = 'security-test';

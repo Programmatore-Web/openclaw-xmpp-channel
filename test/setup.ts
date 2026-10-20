@@ -1,12 +1,19 @@
 import { vi } from 'vitest';
 
 // Unit tests isolate the channel from OpenClaw runtime initialization. The
-// production build still resolves and checks the official 2026.8.2 SDK types.
+// production builds and packed runtime probes still check the real SDK contracts.
 vi.mock('openclaw/plugin-sdk/core', () => ({
   DEFAULT_ACCOUNT_ID: 'default',
-  buildChannelConfigSchema: (schema: unknown, options?: { uiHints?: Record<string, unknown> }) => ({
+  buildJsonChannelConfigSchema: (
+    schema: unknown,
+    options?: {
+      uiHints?: Record<string, unknown>;
+      runtime?: { safeParse: (value: unknown) => unknown };
+    }
+  ) => ({
     schema,
     uiHints: options?.uiHints,
+    runtime: options?.runtime,
   }),
   emptyPluginConfigSchema: () => ({}),
   formatPairingApproveHint: (channel: string) => `openclaw pairing approve ${channel} <code>`,

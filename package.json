@@ -48,7 +48,7 @@
   },
   "dependencies": {
     "@xmpp/client": "0.14.0",
-    "zod": "4.3.6"
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
@@ -66,7 +66,7 @@
     "openclaw": "^2026.8.2"
   },
   "overrides": {
-    "zod": "4.3.6"
+    "zod": "4.6.5"
   },
   "openclaw": {
     "extensions": [

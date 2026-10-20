@@ -5,21 +5,26 @@ baseline.
 
 ## Setup
 
-Requirements: OpenClaw 2026.8.2 or newer within the 2026 release line, npm 9
-or newer, an XMPP test account, and a Node.js version supported by OpenClaw
-2026.8.2: 22.22.3–22.x, 24.15.0–24.x, or 25.9.0 and newer.
+The priority target is OpenClaw 2026.10.5. Use a Node.js version supported by
+the selected host; the compatibility checks use Node.js 24.22.0 and npm 11.19.1
+on Linux. The repository lockfile supplies SDK 2026.8.2 for reproducible builds.
+See the [compatibility scope](README.md#installation) before choosing another
+host. Local automated checks do not require a live XMPP account.
 
 ```bash
 git clone https://github.com/Programmatore-Web/openclaw-xmpp-channel.git
 cd openclaw-xmpp-channel
 npm ci --ignore-scripts
 npm run build
-npm test -- --run
+npm test -- --run --maxWorkers=1
 ```
 
 Use only fictitious generic JIDs such as `bot@example.com`,
 `user@example.com`, and `room@conference.example.com` in source, logs,
 documentation, fixtures, and review notes.
+Account and agent fixtures must also be generic, for example `primary`,
+`secondary`, `account-a` or `agent-a`; retain `main` when testing an OpenClaw
+convention. Do not copy identifiers from an operator's installation.
 
 ## Baseline constraints
 
@@ -59,7 +64,7 @@ src/accounts.ts          Single- and multi-account resolution
 ```bash
 npm ci --ignore-scripts
 npm run build
-npm test -- --run
+npm test -- --run --maxWorkers=1
 npm audit --omit=dev --omit=peer
 npm pack --dry-run
 git diff --check

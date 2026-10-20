@@ -64,7 +64,7 @@ beforeEach(() => {
 
 describe('reactions with an explicit channel default', () => {
   const accounts = {
-    oria: { jid: 'oria@example.com', password: 'fixture', actions: { reactions: true } },
+    secondary: { jid: 'secondary@example.com', password: 'fixture', actions: { reactions: true } },
     main: { jid: 'main@example.com', password: 'fixture', actions: { reactions: true } },
   };
   const invoke = (xmpp: unknown, accountId?: string) =>
@@ -75,9 +75,9 @@ describe('reactions with an explicit channel default', () => {
       params: { chatJid: target, messageId: 'fixture-id', emoji: '👍' },
     });
   it.each([
-    ['oria', undefined, 'oria'],
+    ['secondary', undefined, 'secondary'],
     ['main', undefined, 'main'],
-    ['main', 'oria', 'oria'],
+    ['main', 'secondary', 'secondary'],
   ])('selects %s with override %s', async (defaultAccount, accountId, selected) => {
     const otherSend = vi.fn();
     getActiveClient.mockImplementation((id) => ({ send: id === selected ? send : otherSend }));

@@ -1,0 +1,22 @@
+{
+  "name": "OpenClaw XMPP Channel",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/openclaw-xmpp-channel,type=bind",
+  "workspaceFolder": "/workspaces/openclaw-xmpp-channel",
+  "remoteUser": "node",
+  "updateRemoteUserUID": true,
+  "mounts": [
+    "source=openclaw-xmpp-channel-codex,target=/home/node/.codex,type=volume"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": ["openai.chatgpt"],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}
