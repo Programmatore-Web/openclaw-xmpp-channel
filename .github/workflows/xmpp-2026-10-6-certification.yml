@@ -1,0 +1,117 @@
+name: XMPP OpenClaw 2026.10.6 runtime certification
+
+on:
+  push:
+    branches:
+      - test/xmpp-openclaw-2026-10-6-runtime
+
+permissions:
+  contents: read
+
+jobs:
+  certify:
+    name: Isolated packed-plugin runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout certification branch
+        uses: actions/checkout@v4
+
+      - name: Node 24.22.1
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+
+      - name: Verify host runtime
+        run: |
+          test "$(node --version)" = 'v24.22.1'
+          npm --version
+
+      - name: Reproducible dependency installation
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Full plugin source gates
+        run: |
+          set -Eeuo pipefail
+          npm run build
+          npm run lint
+          npm run format:check
+          npm test -- --run --maxWorkers=1
+          npm pack --dry-run --ignore-scripts >/dev/null
+
+      - name: Packaged runtime resolution gates
+        run: |
+          set -Eeuo pipefail
+          npm run test:packed-runtime
+          npm run test:secret-runtime
+          npm run test:default-account-runtime
+
+      - name: OpenClaw 2026.10.6 packed consumer and native loader
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          validation_dir="$(mktemp -d)"
+          trap 'rm -rf "$validation_dir"' EXIT
+          consumer_dir="$validation_dir/consumer"
+          mkdir -p "$consumer_dir" "$validation_dir/artifact"
+
+          fixture_env() {
+            env -i \
+              PATH="$PATH" \
+              TMPDIR="$validation_dir" \
+              OPENCLAW_HOME="$consumer_dir/.state" \
+              OPENCLAW_STATE_DIR="$consumer_dir/.state" \
+              OPENCLAW_CONFIG_PATH="$consumer_dir/.state/unused.json" \
+              OPENCLAW_AUTH_STORE_READONLY=1 \
+              OPENCLAW_NO_RESPAWN=1 \
+              XDG_CONFIG_HOME="$consumer_dir/.state" \
+              XDG_DATA_HOME="$consumer_dir/.state" \
+              XDG_CACHE_HOME="$consumer_dir/.state" \
+              npm_config_cache="$validation_dir/npm-cache" \
+              npm_config_update_notifier=false \
+              "$@"
+          }
+
+          fixture_env npm pack --json --ignore-scripts \
+            --pack-destination "$validation_dir/artifact" \
+            > "$validation_dir/pack.json"
+          tarball_name="$(fixture_env node -p \
+            'require(process.argv[1])[0].filename' "$validation_dir/pack.json")"
+
+          fixture_env npm install --prefix "$consumer_dir" \
+            --ignore-scripts --omit=dev --save-exact --no-audit --no-fund \
+            'openclaw@2026.10.6' \
+            "$validation_dir/artifact/$tarball_name"
+
+          host_dir="$consumer_dir/node_modules/openclaw"
+          fixture_env node -e \
+            'const p=require(process.argv[1]); if(p.version!=="2026.10.6") process.exit(1)' \
+            "$host_dir/package.json"
+
+          # Public-loader lifecycle from the already characterized probe,
+          # never the operational Gateway or a real XMPP connection.
+          (
+            cd "$consumer_dir"
+            for hook in \
+              preinstall-package-manager-warning.mjs \
+              postinstall-bundled-plugins.mjs
+            do
+              test -f "$host_dir/scripts/$hook"
+              fixture_env node --permission \
+                --allow-fs-read="$consumer_dir" \
+                --allow-fs-write="$host_dir" \
+                "$host_dir/scripts/$hook"
+            done
+          )
+
+          fixture_env node \
+            scripts/test-openclaw-2026-10-5-runtime.mjs \
+            "$consumer_dir" '2026.10.6'
+
+      - name: Confirm branch remains test-only
+        run: |
+          test "$GITHUB_REF_NAME" = 'test/xmpp-openclaw-2026-10-6-runtime'
+          git diff --exit-code
