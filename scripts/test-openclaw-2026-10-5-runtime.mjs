@@ -1,7 +1,7 @@
 // Exact-host checkpoint probe. Install the packed plugin and a characterized SDK
 // in a disposable npm consumer first; this does not build or install packages.
 // The host's reviewed package lifecycle must be complete for its public CLI.
-// Defaults to 2026.10.5; pass 2026.8.2 or 2026.9.9 as the second argument.
+// Defaults to 2026.10.5; pass 2026.8.2, 2026.9.9, or 2026.10.6 as the second argument.
 // Each host retains the same public inspect command, JSON/runtime schema contract
 // and four-method run-state contract. Their different export/Zod graphs are asserted.
 import assert from 'node:assert/strict';
@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 assert.ok(process.argv[2], 'Pass the disposable consumer directory, not an OpenClaw config');
 const version = process.argv[3] ?? '2026.10.5';
-assert.ok(['2026.8.2', '2026.9.9', '2026.10.5'].includes(version), 'Uncharacterized SDK version');
+assert.ok(['2026.8.2', '2026.9.9', '2026.10.5', '2026.10.6'].includes(version), 'Uncharacterized SDK version');
 const consumer = await realpath(resolve(process.argv[2]));
 assert.ok(
   consumer.startsWith((await realpath(tmpdir())) + sep),
@@ -28,7 +28,7 @@ const entry = join(pluginRoot, metadata.exports['.'].import);
 assert.ok(host.startsWith(consumer + sep), 'The SDK must be installed inside the consumer');
 assert.ok(entry.startsWith(consumer + sep), 'The packed plugin must be installed in the consumer');
 assert.equal(JSON.parse(await readFile(join(host, 'package.json'), 'utf8')).version, version);
-const temporary = await mkdtemp(join(consumer, '.xmpp-openclaw-2026-10-5-'));
+const temporary = await mkdtemp(join(consumer, '.xmpp-openclaw-runtime-'));
 
 // This function is serialized into the isolated child; it has no outer bindings.
 async function probe(consumer, version) {
@@ -44,7 +44,7 @@ async function probe(consumer, version) {
     JSON.parse(readFileSync(join(consumer, 'node_modules/openclaw/package.json'), 'utf8')).version,
     version
   );
-  const modern = version === '2026.10.5';
+  const modern = version === '2026.10.5' || version === '2026.10.6';
   const sdkPath = `openclaw/plugin-sdk/${modern ? 'channel-outbound' : 'channel-lifecycle'}`;
   if (modern) {
     assert.throws(() => require.resolve('openclaw/plugin-sdk/channel-lifecycle'), {
